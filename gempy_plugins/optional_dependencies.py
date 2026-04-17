@@ -46,3 +46,9 @@ def require_gdal():
     return gdal
 
 
+def require_flopy():
+    try:
+        import flopy
+    except ImportError:
+        raise ImportError("The flopy package is required to run this function.")
+    return flopy
