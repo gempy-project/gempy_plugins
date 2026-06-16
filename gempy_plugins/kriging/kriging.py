@@ -42,7 +42,7 @@ class Domain:
             domain = np.unique(self.sol.lith_block)
 
         # ! This works for now only on the dense grid.
-        centers: EngineGrid = model_solutions.octrees_output[0].grid_centers
+        centers: EngineGrid = model_solutions.octrees_output[0].grid
         self.set_domain(
             domain=domain,
             grid_values=transform.apply_inverse(centers.dense_grid.values)
@@ -280,7 +280,7 @@ class KrigingFieldSolution(object):
         cmap.set_bad(color='w', alpha=alpha)  # define color and alpha for nan values
 
         # plot
-        if prop is not 'both':
+        if prop != 'both':
             if show_data:
                 plt.scatter(self.domain.data_df[x].values, self.domain.data_df[y].values, marker='*', s=9, c='k')
 
