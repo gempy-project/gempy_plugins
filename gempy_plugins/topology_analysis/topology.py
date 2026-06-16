@@ -210,6 +210,8 @@ def get_lot_node_to_lith_id(geo_model, centroids: Dict[int, np.ndarray]) -> Dict
         Dict[int, int]: Look-up table translating node id -> lith id.
     """
     resolution = geo_model.solutions.block_solution_resolution
+    if not isinstance(resolution, (tuple, list)):
+        resolution = tuple(int(getattr(x, 'item', lambda: x)()) for x in resolution)
     lb = geo_model.solutions.raw_arrays.lith_block.reshape(*resolution).astype(int)
 
     lot = {}
