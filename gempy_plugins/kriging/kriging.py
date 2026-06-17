@@ -10,6 +10,10 @@ import warnings
 from typing import Optional, Sequence
 
 import gempy as gp
+import gempy.core.data
+from gempy_engine.core.data.solutions import Solutions
+from gempy_engine.core.data.transforms import Transform
+from gempy.core.data.geo_model import GeoModel
 from gempy_engine.core.data.engine_grid import EngineGrid
 
 from gempy_engine.core.data.raw_arrays_solution import RawArraysSolution
@@ -19,6 +23,7 @@ from gempy_viewer.modules.plot_2d.drawer_regular_grid_2d import plot_regular_gri
 
 try:
     from scipy.spatial.distance import cdist
+    from scipy import linalg
 except ImportError:
     warnings.warn('scipy.spatial package is not installed.')
 
@@ -30,7 +35,7 @@ from copy import deepcopy
 
 
 class Domain:
-    def __init__(self, model_solutions: gp.data.Solutions, transform: gp.data.Transform, domain: Optional[Sequence] = None, data=None, set_mean=None):
+    def __init__(self, model_solutions: Solutions, transform: Transform, domain: Optional[Sequence] = None, data=None, set_mean=None):
 
         # set model from a gempy solution
         # TODO: Check if I actually need all this or if its easier to just get grid and lith of the solution
@@ -314,7 +319,7 @@ class KrigingFieldSolution(object):
             plt.tight_layout()
 
 
-def plot_kriging_results(geo_data: gp.data.GeoModel, kriging_solution: KrigingFieldSolution, plot_2d: Plot2D,
+def plot_kriging_results(geo_data: GeoModel, kriging_solution: KrigingFieldSolution, plot_2d: Plot2D,
                          title: str, result_column: list[str]):
     for e, ax in enumerate(plot_2d.axes):
         a = np.full_like(kriging_solution.domain.mask, np.nan, dtype=np.double)
@@ -419,6 +424,27 @@ def ordinary_kriging(a, b, prop, var_mod):
     return result, pred_var
 
 
+def _ordinary_kriging_from_lu(a, prop, var_mod, LU, piv):
+    shape = len(a)
+    c = np.zeros(shape + 1)
+    c[:shape] = var_mod.calculate_semivariance(a)
+    c[shape] = 1.0
+    w = linalg.lu_solve((LU, piv), c)
+    pred_var = w[shape] + np.sum(w[:shape] * c[:shape])
+    result = np.sum(w[:shape] * prop)
+    return result, pred_var
+
+
+def _simple_kriging_from_lu(a, prop, var_mod, inp_mean, LU, piv):
+    shape = len(a)
+    c = np.zeros(shape)
+    c[:shape] = var_mod.calculate_covariance(a)
+    w = linalg.lu_solve((LU, piv), c)
+    pred_var = var_mod.sill - np.sum(w * c)
+    result = inp_mean + np.sum(w * (prop - inp_mean))
+    return result, pred_var
+
+
 def create_kriged_field(domain, variogram_model, distance_type='euclidian',
                         moving_neighbourhood='all', kriging_type='OK', n_closest_points=20):
     '''
@@ -428,64 +454,88 @@ def create_kriged_field(domain, variogram_model, distance_type='euclidian',
         self.results_df (pandas dataframe):   Dataframe containing coordinates, kriging estimate
                                                     and kriging variance for each grid point
     '''
-    # empty arrays for results (estimated values and variances)
-    kriging_result_vals = np.zeros(len(domain.krig_grid))
-    kriging_result_vars = np.zeros(len(domain.krig_grid))
+    n_grid = len(domain.krig_grid)
+    n_data = len(domain.data[:, 3])
+    kriging_result_vals = np.zeros(n_grid)
+    kriging_result_vars = np.zeros(n_grid)
 
-    # Start with distance calculation
-    # 1) all grid points to all data points
-    # 2) all data points among each other
     if distance_type == 'euclidian':
-        # calculate distances between all input data points
-        dist_all_to_all = cdist(domain.data[:, :3], domain.data[:, :3])
-        # calculate distances between all grid points and all input data points
         dist_grid_to_all = cdist(domain.krig_grid, domain.data[:, :3])
 
-    # Main loop that goes through whole domain (grid)
-    for i in range(len(domain.krig_grid)):
+    if moving_neighbourhood == 'all' and n_data > 0:
+        dist_all_to_all = cdist(domain.data[:, :3], domain.data[:, :3])
 
-        # STEP 1: Multiple if elif conditions to define moving neighbourhood:
-        if moving_neighbourhood == 'all':
-            # cutting matrices and properties based on moving neighbourhood
-            a = dist_grid_to_all[i]
-            b = dist_all_to_all
-            prop = domain.data[:, 3]
-
-        elif moving_neighbourhood == 'n_closest':
-            # cutting matrices and properties based on moving neighbourhood
-            a = np.sort(dist_grid_to_all[i])
-            a = a[:n_closest_points]
-            aux = np.argsort(dist_grid_to_all[i])
-            prop = domain.data[:, 3][aux]
-            prop = prop[:n_closest_points]
-            aux = aux[:n_closest_points]
-            b = dist_all_to_all[np.ix_(aux, aux)]
-
-        elif moving_neighbourhood == 'range':
-            # cutting matrices and properties based on moving neighbourhood
-            aux = np.where(dist_grid_to_all[i] <= variogram_model.range_)[0]
-            a = dist_grid_to_all[i][aux]
-            prop = domain.data[:, 3][aux]
-            b = dist_all_to_all[np.ix_(aux, aux)]
-
-        else:
-            print("FATAL ERROR: Moving neighbourhood not understood")
-
-        # STEP 2: Multiple if elif conditions to calculate kriging at point
         if kriging_type == 'OK':
-            val, var = ordinary_kriging(a, b, prop, variogram_model)
+            shape = n_data
+            C = np.zeros((shape + 1, shape + 1))
+            C[:shape, :shape] = variogram_model.calculate_semivariance(dist_all_to_all)
+            np.fill_diagonal(C, 0)
+            C[shape, :] = 1.0
+            C[:, shape] = 1.0
+            C[shape, shape] = 0.0
+            LU, piv = linalg.lu_factor(C)
+            prop = domain.data[:, 3]
+            for i in range(n_grid):
+                val, var = _ordinary_kriging_from_lu(dist_grid_to_all[i], prop, variogram_model, LU, piv)
+                kriging_result_vals[i] = val
+                kriging_result_vars[i] = var
+
         elif kriging_type == 'SK':
-            val, var = simple_kriging(a, b, prop, variogram_model, domain.inp_mean)
-        elif kriging_type == 'UK':
-            print("Universal Kriging not implemented")
+            shape = n_data
+            C = np.zeros((shape, shape))
+            C[:shape, :shape] = variogram_model.calculate_covariance(dist_all_to_all)
+            LU, piv = linalg.lu_factor(C)
+            prop = domain.data[:, 3]
+            for i in range(n_grid):
+                val, var = _simple_kriging_from_lu(dist_grid_to_all[i], prop, variogram_model, domain.inp_mean, LU, piv)
+                kriging_result_vals[i] = val
+                kriging_result_vars[i] = var
         else:
             print("FATAL ERROR: Kriging type not understood")
+    else:
+        if moving_neighbourhood != 'all':
+            dist_all_to_all = cdist(domain.data[:, :3], domain.data[:, :3])
 
-        # STEP 3: Save results
-        kriging_result_vals[i] = val
-        kriging_result_vars[i] = var
+        for i in range(n_grid):
+            if moving_neighbourhood == 'all':
+                a = dist_grid_to_all[i]
+                b = dist_all_to_all
+                prop = domain.data[:, 3]
 
-    # create dataframe of results data for calling
+            elif moving_neighbourhood == 'n_closest':
+                n_neighbors = min(n_closest_points, n_data)
+                nearest_idx = np.argpartition(dist_grid_to_all[i], n_neighbors - 1)[:n_neighbors]
+                nearest_idx = nearest_idx[np.argsort(dist_grid_to_all[i][nearest_idx])]
+                a = dist_grid_to_all[i][nearest_idx]
+                prop = domain.data[:, 3][nearest_idx]
+                b = dist_all_to_all[np.ix_(nearest_idx, nearest_idx)]
+
+            elif moving_neighbourhood == 'range':
+                aux = np.where(dist_grid_to_all[i] <= variogram_model.range_)[0]
+                if len(aux) == 0:
+                    aux = np.array([0])
+                a = dist_grid_to_all[i][aux]
+                prop = domain.data[:, 3][aux]
+                b = dist_all_to_all[np.ix_(aux, aux)]
+
+            else:
+                print("FATAL ERROR: Moving neighbourhood not understood")
+                continue
+
+            if kriging_type == 'OK':
+                val, var = ordinary_kriging(a, b, prop, variogram_model)
+            elif kriging_type == 'SK':
+                val, var = simple_kriging(a, b, prop, variogram_model, domain.inp_mean)
+            elif kriging_type == 'UK':
+                print("Universal Kriging not implemented")
+                continue
+            else:
+                print("FATAL ERROR: Kriging type not understood")
+                continue
+
+            kriging_result_vals[i] = val
+            kriging_result_vars[i] = var
+
     d = {'X': domain.krig_grid[:, 0], 'Y': domain.krig_grid[:, 1], 'Z': domain.krig_grid[:, 2],
          'estimated value': kriging_result_vals, 'estimation variance': kriging_result_vars}
 
@@ -495,87 +545,79 @@ def create_kriged_field(domain, variogram_model, distance_type='euclidian',
 
 
 def create_gaussian_field(domain, variogram_model, distance_type='euclidian',
-                          moving_neighbourhood='all', kriging_type='OK', n_closest_points=20):
+                          moving_neighbourhood='n_closest', kriging_type='OK', n_closest_points=20):
     '''
-    Method to create a kriged field over the defined grid of the gempy solution depending on the defined
-    input data (conditioning).
-    Returns:
-        self.results_df (pandas dataframe):   Dataframe containing coordinates, kriging estimate
-                                                        and kriging variance for each grid point
-    '''
-    # perform SGS with same options as kriging
-    # TODO: set options for no starting points (Gaussian field) - mean and variance
+    Method to perform Sequential Gaussian Simulation over the defined grid of the gempy
+    solution depending on the defined input data (conditioning).
 
-    # set random path through all unknown locations
-    shuffled_grid = domain.krig_grid
+    Defaults to a local neighbourhood (n_closest) to avoid building a full
+    N x N distance matrix for dense grids.
+
+    Returns:
+        KrigingFieldSolution with results_df containing coordinates, estimate and variance.
+    '''
+    n_grid = len(domain.krig_grid)
+    n_data = len(domain.data[:, 3])
+
+    if moving_neighbourhood == 'all' and n_grid > 1000:
+        raise ValueError(
+            f"moving_neighbourhood='all' requires a ({n_grid+n_data}) x ({n_grid+n_data}) "
+            f"distance matrix which is infeasible for {n_grid} grid nodes. "
+            f"Use moving_neighbourhood='n_closest' or 'range' instead."
+        )
+
+    shuffled_grid = domain.krig_grid.copy()
     np.random.shuffle(shuffled_grid)
 
-    # append shuffled grid to input locations
     sgs_locations = np.vstack((domain.data[:, :3], shuffled_grid))
-    # create array for input properties
-    sgs_prop_updating = domain.data[:, 3]  # use this and then always stack new ant end
+    sgs_prop_updating = domain.data[:, 3].copy()
 
-    # container for estimation variances
-    estimation_var = np.zeros(len(shuffled_grid))
+    estimation_var = np.zeros(n_grid)
 
-    # - distance calculation (stays the same)
-    # 1) all points to all points in order of path
-    # 2) known locations at beginning?
-    if distance_type == 'euclidian':
-        # calculate distances between all input data points
+    if moving_neighbourhood == 'all':
         dist_all_to_all = cdist(sgs_locations, sgs_locations)
 
-    # set counter og active data (start=input data, grwoing by 1 newly calcualted point each run)
-    active_data = len(sgs_prop_updating)
+    active_data = n_data
 
-    # Main loop that goes through whole domain (grid)
-    for i in range(len(domain.krig_grid)):
-        # STEP 1: cut update distance matrix to correct size
-        # HAVE TO CHECK IF THIS IS REALLY CORRECT
-        active_distance_matrix = dist_all_to_all[:active_data, :active_data]
-        active_distance_vector = dist_all_to_all[:, active_data]  # basically next point to be simulated
-        active_distance_vector = active_distance_vector[:active_data]  # cut to left or diagonal
+    for i in range(n_grid):
+        target_coords = sgs_locations[active_data:active_data + 1]
 
-        # TODO: NEED PART FOR ZERO INPUT OR NO POINTS IN RANGE OR LESS THAN N POINTS
-
-        # STEP 2: Multiple if elif conditions to define moving neighbourhood:
         if moving_neighbourhood == 'all':
-            # cutting matrices and properties based on moving neighbourhood
-            a = active_distance_vector
-            b = active_distance_matrix
-            prop = sgs_prop_updating
-
-        elif moving_neighbourhood == 'n_closest':
-            # cutting matrices and properties based on moving neighbourhood
-
-            # This seems to work
-            if len(sgs_prop_updating) <= n_closest_points:
-                a = active_distance_vector[:active_data]
-                b = active_distance_matrix[:active_data, :active_data]
-                prop = sgs_prop_updating
-
-            # this does not # DAMN THIS STILL HAS ITSELF RIGHT? PROBLEM!
-            else:
-                a = np.sort(active_distance_vector)
-                a = a[:n_closest_points]
-                aux = np.argsort(active_distance_vector)
-                prop = sgs_prop_updating[aux]
-                prop = prop[:n_closest_points]
-                aux = aux[:n_closest_points]
-                b = active_distance_matrix[np.ix_(aux, aux)]
-
-        elif moving_neighbourhood == 'range':
-            # cutting matrices and properties based on moving neighbourhood
-            aux = np.where(active_distance_vector <= variogram_model.range_)[0]
-            a = active_distance_vector[aux]
-            prop = sgs_prop_updating[aux]
-            b = active_distance_matrix[np.ix_(aux, aux)]
-
+            a = dist_all_to_all[active_data, :active_data]
+            b = dist_all_to_all[:active_data, :active_data]
+            prop = sgs_prop_updating[:active_data]
         else:
-            print("FATAL ERROR: Moving neighbourhood not understood")
+            target_dists = cdist(target_coords, sgs_locations[:active_data, :3])[0]
 
-        # STEP 3: Multiple if elif conditions to calculate kriging at point
-        # TODO: Cover case of data location and grid point coinciding
+            if moving_neighbourhood == 'n_closest':
+                n_neighbors = min(n_closest_points, active_data)
+                if n_neighbors == 0:
+                    val = domain.inp_mean if kriging_type == 'SK' else np.mean(domain.data[:, 3])
+                    var = variogram_model.sill
+                    std_ = np.sqrt(max(var, 0))
+                    estimate = np.random.normal(val, scale=std_)
+                    sgs_prop_updating = np.append(sgs_prop_updating, estimate)
+                    estimation_var[i] = var
+                    active_data += 1
+                    continue
+                nearest_idx = np.argpartition(target_dists, n_neighbors - 1)[:n_neighbors]
+                nearest_idx = nearest_idx[np.argsort(target_dists[nearest_idx])]
+                a = target_dists[nearest_idx]
+                prop = sgs_prop_updating[nearest_idx]
+                b = cdist(sgs_locations[nearest_idx, :3], sgs_locations[nearest_idx, :3])
+
+            elif moving_neighbourhood == 'range':
+                aux = np.where(target_dists <= variogram_model.range_)[0]
+                if len(aux) == 0:
+                    aux = np.array([0])
+                a = target_dists[aux]
+                prop = sgs_prop_updating[aux]
+                b = cdist(sgs_locations[aux, :3], sgs_locations[aux, :3])
+
+            else:
+                print("FATAL ERROR: Moving neighbourhood not understood")
+                continue
+
         if kriging_type == 'OK':
             val, var = ordinary_kriging(a, b, prop, variogram_model)
         elif kriging_type == 'SK':
@@ -584,22 +626,17 @@ def create_gaussian_field(domain, variogram_model, distance_type='euclidian',
             print("Universal Kriging not implemented")
         else:
             print("FATAL ERROR: Kriging type not understood")
+            continue
 
-        # STEP 4: Draw from random distribution
-        std_ = np.sqrt(var)
+        std_ = np.sqrt(max(var, 0.0))
         estimate = np.random.normal(val, scale=std_)
 
-        # append to prop:
         sgs_prop_updating = np.append(sgs_prop_updating, estimate)
         estimation_var[i] = var
-
-        # at end of loop: include simulated point for next step
         active_data += 1
 
-    # delete original input data from results
-    simulated_prop = sgs_prop_updating[len(domain.data[:, 3]):]  # check if this works like intended
+    simulated_prop = sgs_prop_updating[n_data:]
 
-    # create dataframe of results data for calling
     d = {'X': shuffled_grid[:, 0], 'Y': shuffled_grid[:, 1], 'Z': shuffled_grid[:, 2],
          'estimated value': simulated_prop, 'estimation variance': estimation_var}
 
