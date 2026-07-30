@@ -52,3 +52,11 @@ def require_flopy():
     except ImportError:
         raise ImportError("The flopy package is required to run this function.")
     return flopy
+
+
+def require_sklearn():
+    try:
+        import sklearn
+    except ImportError:
+        raise ImportError("The scikit-learn package is required to use this function.")
+    return sklearn
