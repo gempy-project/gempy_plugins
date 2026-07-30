@@ -21,7 +21,8 @@ pip install -e .
 ## Structure
 
 - **Active plugin directories** (e.g. `kriging/`, `topology_analysis/`) -- actively
-  maintained plugins.
+  maintained plugins. Each should have its own `tests/` folder with sufficient test
+  coverage, and its own `examples/` folder with at least one example.
 - **`archive/`** -- stale or outdated code that isn't actively maintained, kept as a
   reference.
 - **`wip/`** -- features still being built out. Expect incomplete functionality and
