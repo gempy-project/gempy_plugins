@@ -308,6 +308,30 @@ def test_run_simulation_unconditioned(geo_model, domains, conditioning_data):
     assert not np.all(np.isnan(field.values))
 
 
+def test_run_simulation_mixed_conditioned_and_unconditioned(geo_model, domains, conditioning_data):
+    """One run_simulation call, one domain conditioned with an isotropic model, another
+    unconditioned with a strongly anisotropic ("directional variogram") model."""
+    lith_array, fault_array, domain_keys = domains
+    isotropic_model = gs.Gaussian(dim=3, var=4, len_scale=300, nugget=0.1)
+    directional_model = gs.Gaussian(dim=3, var=4, len_scale=1000, anis=[0.05, 0.05], angles=(np.pi / 4, 0, 0))
+
+    conditioned_key = domain_keys[0]
+    unconditioned_key = domain_keys[2]
+    configs = {
+        conditioned_key: SimulationDomainConfig(model=isotropic_model, seed=1),
+        unconditioned_key: SimulationDomainConfig(
+            model=directional_model, conditioned=False, srf_kwargs={'mean': 15}, seed=2,
+        ),
+    }
+    field = run_simulation(geo_model, conditioning_data, configs)
+
+    assert set(field.domain_keys) == {conditioned_key, unconditioned_key}
+    populated_mask = domain_mask(lith_array, fault_array, conditioned_key) | domain_mask(
+        lith_array, fault_array, unconditioned_key
+    )
+    assert np.sum(~np.isnan(field.values)) == populated_mask.sum()
+
+
 def test_neighborhood_validates_required_params():
     with pytest.raises(ValueError):
         Neighborhood(mode="n_closest")
