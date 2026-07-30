@@ -1,9 +1,8 @@
 import gempy as gp
 import os
 
-from orientations_generator import select_nearest_surfaces_points, NearestSurfacePointsSearcher
+from gempy_plugins.orientations_generator import select_nearest_surfaces_points, NearestSurfacePointsSearcher
 
-input_path = os.path.dirname(__file__) + '/../../examples/data'
 data_path = os.path.dirname(__file__) + '/data'
 
 
@@ -24,7 +23,7 @@ def test_set_orientations():
     geo_data = _model_factory()
 
     orientations: gp.data.OrientationsTable = gp.create_orientations_from_surface_points_coords(
-        xyz_coords=geo_data.surface_points.xyz
+        xyz_coords=geo_data.surface_points_copy.xyz
     )
 
     gp.add_orientations(
@@ -55,8 +54,9 @@ def test_select_nearest_surface_points():
         searchcrit=200.,
         search_type=NearestSurfacePointsSearcher.RADIUS
     )
-    
-    return knn
+
+    assert len(knn) > 0
+    assert len(radius) > 0
 
 
 def test_set_orientation_from_neighbours():
@@ -73,7 +73,7 @@ def test_set_orientation_from_neighbours():
     )
 
     orientations: gp.data.OrientationsTable = gp.create_orientations_from_surface_points_coords(
-        xyz_coords=geo_model.surface_points.xyz,
+        xyz_coords=geo_model.surface_points_copy.xyz,
         subset=knn
     )       
 
@@ -85,5 +85,5 @@ def test_set_orientation_from_neighbours():
         pole_vector=orientations.grads,
         elements_names=geo_model.structural_frame.elements_names[0],
     )
-    
-    return knn
+
+    assert len(knn) > 0

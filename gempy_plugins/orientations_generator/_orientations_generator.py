@@ -2,8 +2,8 @@ import enum
 from typing import Optional
 
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import normalize
+
+from gempy_plugins.optional_dependencies import require_sklearn
 
 
 class NearestSurfacePointsSearcher(enum.Enum):
@@ -14,6 +14,9 @@ class NearestSurfacePointsSearcher(enum.Enum):
 def select_nearest_surfaces_points(surface_points_xyz: np.ndarray, searchcrit: Optional[int|float] = 3,
                                    search_type: NearestSurfacePointsSearcher = NearestSurfacePointsSearcher.KNN,
                                    filter_less_than: Optional[int] = None) -> np.ndarray:
+    require_sklearn()
+    from sklearn.neighbors import NearestNeighbors
+
     match search_type:
         case NearestSurfacePointsSearcher.KNN:
             Tree = NearestNeighbors(n_neighbors=searchcrit)
