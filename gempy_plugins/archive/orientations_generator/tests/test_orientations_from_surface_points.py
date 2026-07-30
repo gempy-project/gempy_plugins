@@ -4,7 +4,7 @@ import os
 from orientations_generator import select_nearest_surfaces_points, NearestSurfacePointsSearcher
 
 input_path = os.path.dirname(__file__) + '/../../examples/data'
-data_path = os.path.abspath('../../../tests/data')
+data_path = os.path.dirname(__file__) + '/data'
 
 
 def _model_factory():
