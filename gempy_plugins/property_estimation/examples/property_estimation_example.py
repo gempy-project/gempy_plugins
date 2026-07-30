@@ -38,7 +38,9 @@ np.random.seed(1)
 # A faulted structural model
 # -----------------------------
 # The same model used in the reference notebook above: three lithologies offset by a
-# fault.
+# fault -- except here ``rock3`` is placed *younger* than the fault (first in the
+# mapping below), so the fault doesn't actually offset it. That's deliberate: it's the
+# motivating example for domain merging further down.
 
 # %%
 data_path = 'https://raw.githubusercontent.com/cgre-aachen/gempy_data/master/'
@@ -55,8 +57,8 @@ geo_model = gp.create_geomodel(
 gp.map_stack_to_surfaces(
     gempy_model=geo_model,
     mapping_object={
-        "Fault_Series": ('fault'),
         "Strat_Series1": ('rock3'),
+        "Fault_Series": ('fault'),
         "Strat_Series2": ('rock2', 'rock1'),
     }
 )
@@ -83,13 +85,35 @@ plot_domains(geo_model, lith_array, fault_array, domain_keys)
 
 # %%
 # Shades alone don't say *which* fault block is which, though -- and that's exactly
-# what you need to decide whether domains should be merged (e.g. a negligible-offset
-# fault, or one that doesn't actually affect a given lithology at all -- fault-block
-# membership is purely geometric, independent of whether `fault_relations` applies an
-# offset to a given lithology). ``plot_fault_blocks`` shows fault blocks alone:
+# what you need to decide whether domains should be merged. ``plot_fault_blocks``
+# shows fault blocks alone:
 
 # %%
 plot_fault_blocks(geo_model, fault_array)
+
+# %%
+# Why some domains need merging
+# ---------------------------------
+# ``rock3`` was placed younger than the fault above, so it shouldn't be offset by it
+# at all -- and ``fault_relations`` confirms that:
+
+# %%
+geo_model.structural_frame.fault_relations
+
+# %%
+# And yet ``rock3`` still shows up as *two* separate domains in the plots above, one
+# per fault block. That's because fault-block membership is purely geometric -- which
+# side of the fault's surface a cell falls on -- independent of whether
+# ``fault_relations`` actually applies an offset to a given lithology. The same thing
+# happens with a real fault of negligible offset: geometrically there are still two
+# blocks, even though nothing actually moved. Either way, the fix is the same: merge
+# the domains that should really be treated as one. This is a purely structural
+# decision -- it doesn't need any conditioning data yet, just the domain keys
+# themselves. A ``domain_configs`` key can be a tuple of domain keys instead of a
+# single one, to merge them later:
+
+# %%
+rock3_merged = (domain_keys[0], domain_keys[1])
 
 # %%
 # Conditioning data
@@ -112,17 +136,24 @@ conditioning_data.assign_domains(geo_model, lith_array, fault_array)
 # -----------------------------------------------
 # A domain is processed only if it has an entry in ``domain_configs`` -- so kriging can
 # be run over a chosen subset of domains, each with its own variogram model and kriging
-# method. A small nugget is added here since a smooth, nugget-free Gaussian covariance
-# model can become numerically ill-conditioned once a domain has many conditioning
-# points -- worth knowing about if you see wildly out-of-range kriged values.
+# method. To make that concrete, three domains below each get different treatment: the
+# merged ``rock3`` domain and ``basement`` share a Gaussian model, ``rock2`` gets an
+# Exponential model instead, and kriging type varies independently of that -- Ordinary
+# for ``rock3``/``rock2``, Simple (with a fixed mean) for ``basement``. A small nugget
+# is added to the Gaussian model since a smooth, nugget-free Gaussian covariance model
+# can become numerically ill-conditioned once a domain has many conditioning points --
+# worth knowing about if you see wildly out-of-range kriged values. The Exponential
+# model doesn't have that problem even without a nugget.
 
 # %%
-shared_model = gs.Gaussian(dim=3, var=4, len_scale=400, nugget=0.1)
+gaussian_model = gs.Gaussian(dim=3, var=4, len_scale=400, nugget=0.1)
+exponential_model = gs.Exponential(dim=3, var=4, len_scale=400)
 
 domain_configs = {
-    domain_keys[0]: KrigingDomainConfig(model=shared_model),
-    domain_keys[2]: KrigingDomainConfig(
-        model=shared_model,
+    rock3_merged: KrigingDomainConfig(model=gaussian_model),
+    domain_keys[2]: KrigingDomainConfig(model=exponential_model),
+    domain_keys[6]: KrigingDomainConfig(
+        model=gaussian_model,
         krige_class=gs.krige.Simple,
         krige_kwargs={'mean': 15},
     ),
@@ -130,23 +161,8 @@ domain_configs = {
 field = run_kriging(geo_model, conditioning_data, domain_configs)
 
 # %%
-# Only the two configured domains are populated -- everything else stays `nan` and
+# Only the three configured domains are populated -- everything else stays `nan` and
 # simply isn't rendered:
 
 # %%
 plot_property_field(geo_model, field)
-
-# %%
-# Merging domains
-# ------------------
-# Sometimes several domains should really be populated together, sharing one
-# conditioning-data pool and one variogram -- e.g. a fault with negligible offset (both
-# fault blocks of a lithology), or two adjacent lithologies that should share one
-# property model. A ``domain_configs`` key can be a tuple of domain keys instead of a
-# single one, to merge them:
-
-# %%
-merged_group = (domain_keys[4], domain_keys[5])  # both fault blocks of one lithology
-domain_configs_merged = {merged_group: KrigingDomainConfig(model=shared_model)}
-field_merged = run_kriging(geo_model, conditioning_data, domain_configs_merged)
-plot_property_field(geo_model, field_merged)

@@ -94,16 +94,15 @@ def validate_disjoint_groups(group_keys) -> None:
 def describe_domains(geo_model: gp.data.GeoModel, domain_keys: List[DomainKey]) -> Dict[DomainKey, str]:
     """Human-readable name per domain key, e.g. (2, 0) -> "rock3 (fault block 0)".
 
-    `lith_block` ids run from `n_faults + 1` to `n_elements`, in `elements_names` order
-    -- i.e. fault elements first, then lithology elements (the same assumption
-    `topology_analysis.get_lith_ids` relies on, confirmed against `lith_block`'s actual
-    values).
+    A `lith_block` id is simply an element's 1-indexed position in
+    `structural_frame.elements_names` -- fault elements' slots are just never used in
+    `lith_block` (faults aren't a lithology), not renumbered away, so this holds
+    regardless of where in the stack a fault sits (it doesn't have to be the youngest
+    group). Confirmed against `lith_block`'s actual values with the fault both as the
+    youngest group and placed in the middle of the stack.
     """
     structural_frame = geo_model.structural_frame
-    n_faults = int(np.sum(structural_frame.group_is_fault))
-    lith_names = structural_frame.elements_names[n_faults:]
-    lith_ids = list(range(n_faults + 1, structural_frame.n_elements + 1))
-    lith_id_to_name = dict(zip(lith_ids, lith_names))
+    lith_id_to_name = {i + 1: name for i, name in enumerate(structural_frame.elements_names)}
 
     fault_ids_present = {fault_id for _, fault_id in domain_keys}
     show_fault_suffix = len(fault_ids_present) > 1
