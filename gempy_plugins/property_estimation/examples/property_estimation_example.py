@@ -30,7 +30,9 @@ import gstools as gs
 from gempy_plugins.property_estimation.conditioning_data import ConditioningData
 from gempy_plugins.property_estimation.domains import compute_domains, describe_domains
 from gempy_plugins.property_estimation.kriging import KrigingDomainConfig, run_kriging
-from gempy_plugins.property_estimation.plotting import plot_domains, plot_fault_blocks, plot_property_field
+from gempy_plugins.property_estimation.plotting import (
+    plot_conditioning_data, plot_domains, plot_fault_blocks, plot_property_field,
+)
 
 np.random.seed(1)
 
@@ -130,6 +132,14 @@ conditioning_data = ConditioningData(
     values=np.random.normal(15, 3, n_samples),
 )
 conditioning_data.assign_domains(geo_model, lith_array, fault_array)
+
+# %%
+# It's worth seeing where these samples actually sit relative to the structure before
+# running anything -- ``plot_conditioning_data`` overlays them (colored by value) on
+# the model's surfaces alone:
+
+# %%
+plot_conditioning_data(geo_model, conditioning_data)
 
 # %%
 # Kriging, with different settings per domain

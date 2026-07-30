@@ -14,7 +14,9 @@ from gempy_plugins.property_estimation.domains import (
 )
 from gempy_plugins.property_estimation.kriging import KrigingDomainConfig, run_kriging
 from gempy_plugins.property_estimation.neighborhood import Neighborhood
-from gempy_plugins.property_estimation.plotting import plot_domains, plot_fault_blocks, plot_property_field
+from gempy_plugins.property_estimation.plotting import (
+    plot_conditioning_data, plot_domains, plot_fault_blocks, plot_property_field,
+)
 from gempy_plugins.property_estimation.simulation import SimulationDomainConfig, run_simulation
 
 data_path = "https://raw.githubusercontent.com/cgre-aachen/gempy_data/master/"
@@ -121,6 +123,15 @@ def test_plot_fault_blocks_labels_each_block(geo_model, domains):
     n_fault_blocks = len(np.unique(fault_array))
     assert len(np.unique(plotter.mesh.cell_data['fault_block'])) == n_fault_blocks
     plotter.close()
+
+
+def test_plot_conditioning_data_adds_points_to_surface_plot(geo_model, conditioning_data):
+    p3d = plot_conditioning_data(geo_model, conditioning_data, show=False)
+
+    point_meshes = [mesh for mesh in p3d.p.meshes if mesh.n_points == len(conditioning_data)]
+    assert len(point_meshes) == 1
+    assert np.allclose(np.sort(point_meshes[0]['value']), np.sort(conditioning_data.values))
+    p3d.p.close()
 
 
 def test_plot_property_field_only_shows_computed_domains(geo_model, domains, conditioning_data):
