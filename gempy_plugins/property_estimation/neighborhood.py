@@ -36,12 +36,32 @@ class Neighborhood:
             raise ValueError("Neighborhood(mode='range') requires radius.")
 
 
-def local_neighbor_indices(query_xyz: np.ndarray, cond_xyz: np.ndarray, neighborhood: Neighborhood) -> List[np.ndarray]:
-    """One conditioning-point index array per query point, for 'n_closest'/'range' modes."""
+def local_neighbor_indices(query_xyz: np.ndarray, cond_xyz: np.ndarray, neighborhood: Neighborhood, model) -> List[np.ndarray]:
+    """One conditioning-point index array per query point, for 'n_closest'/'range' modes.
+
+    `model` (the same GSTools `CovModel` used for kriging in this domain) is required
+    so the search can be anisotropy-aware: raw Euclidean nearest-neighbor search would
+    ignore anisotropy/rotation entirely, and for a strongly anisotropic model, "closest"
+    in plain distance is not the same as "closest" in the model's actual correlation
+    structure (a point far away along the long axis can be more correlated than one
+    nearby along the short axis). `model.isometrize(...)` transforms coordinates into a
+    space where plain Euclidean distance directly corresponds to the model's own
+    covariance, so a KDTree search there is correct regardless of anisotropy/rotation --
+    and for an isotropic model, it reduces to a harmless uniform rescaling that leaves
+    the neighbor search unchanged.
+
+    Note this also changes what `radius` means in "range" mode: it's a distance in this
+    isometrized space, not raw physical distance -- effectively "how many of the
+    model's own (main-axis) correlation lengths away", which is consistent regardless
+    of direction.
+    """
     from scipy.spatial import cKDTree
 
     if neighborhood.mode == "all":
         raise ValueError("local_neighbor_indices is only for 'n_closest'/'range' modes.")
+
+    query_xyz = np.array(model.isometrize((query_xyz[:, 0], query_xyz[:, 1], query_xyz[:, 2]))).T
+    cond_xyz = np.array(model.isometrize((cond_xyz[:, 0], cond_xyz[:, 1], cond_xyz[:, 2]))).T
 
     tree = cKDTree(cond_xyz)
 

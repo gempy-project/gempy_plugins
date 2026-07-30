@@ -120,7 +120,7 @@ def _krige_domain(
         x, y, z = query_xyz[:, 0], query_xyz[:, 1], query_xyz[:, 2]
         return krige((x, y, z), mesh_type="unstructured")
 
-    neighbor_idx_list = local_neighbor_indices(query_xyz, subset.xyz, config.neighborhood)
+    neighbor_idx_list = local_neighbor_indices(query_xyz, subset.xyz, config.neighborhood, config.model)
     field_vals = np.empty(len(query_xyz))
     field_var = np.empty(len(query_xyz))
     for i, (point, idx) in enumerate(zip(query_xyz, neighbor_idx_list)):

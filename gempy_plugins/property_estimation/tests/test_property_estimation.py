@@ -13,7 +13,7 @@ from gempy_plugins.property_estimation.domains import (
     compute_domains, describe_domains, domain_mask, group_mask, validate_disjoint_groups,
 )
 from gempy_plugins.property_estimation.kriging import KrigingDomainConfig, run_kriging
-from gempy_plugins.property_estimation.neighborhood import Neighborhood
+from gempy_plugins.property_estimation.neighborhood import Neighborhood, local_neighbor_indices
 from gempy_plugins.property_estimation.plotting import (
     plot_conditioning_data, plot_domains, plot_fault_blocks, plot_property_field,
 )
@@ -315,3 +315,24 @@ def test_neighborhood_validates_required_params():
         Neighborhood(mode="range")
     Neighborhood(mode="n_closest", n=5)
     Neighborhood(mode="range", radius=100.0)
+
+
+def test_local_neighbor_indices_is_anisotropy_aware():
+    # long correlation range along x, short along y -- so a point far away along x
+    # should count as "closer" (more correlated) than a nearby point along y
+    model = gs.Gaussian(dim=3, var=4, len_scale=1000, anis=[0.05, 0.05])
+
+    query = np.array([[0.0, 0.0, 0.0]])
+    cond = np.array([
+        [0.0, 50.0, 0.0],    # raw-close, but along the short-range axis
+        [400.0, 0.0, 0.0],   # raw-far, but along the long-range axis
+    ])
+    assert np.linalg.norm(cond[0]) < np.linalg.norm(cond[1])  # sanity check on raw distances
+
+    idx = local_neighbor_indices(query, cond, Neighborhood(mode="n_closest", n=1), model)
+    assert idx[0][0] == 1  # picks the anisotropy-correlated point, not the raw-closer one
+
+    # an isotropic model should behave like plain Euclidean nearest-neighbor search
+    iso_model = gs.Gaussian(dim=3, var=4, len_scale=1000)
+    idx_iso = local_neighbor_indices(query, cond, Neighborhood(mode="n_closest", n=1), iso_model)
+    assert idx_iso[0][0] == 0
