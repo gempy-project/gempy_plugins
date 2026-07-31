@@ -10,7 +10,7 @@ import gempy as gp
 from gempy_plugins.optional_dependencies import require_gstools
 from gempy_plugins.property_estimation.conditioning_data import ConditioningData
 from gempy_plugins.property_estimation.domains import (
-    DomainGroup, DomainKey, as_group, domain_mask, group_mask, validate_disjoint_groups,
+    DomainGroup, DomainKey, as_group, compute_domains, domain_mask, group_mask, validate_disjoint_groups,
 )
 from gempy_plugins.property_estimation.neighborhood import Neighborhood, local_neighbor_indices
 
@@ -35,6 +35,16 @@ class KrigingDomainConfig:
 
 
 @dataclass
+class DomainFieldResult:
+    """xyz + values/variance for one domain (or merged group), pulled out of a
+    `PropertyField` -- e.g. to feed into GSTools variogram estimation restricted to
+    that domain's own footprint."""
+    xyz: np.ndarray
+    values: np.ndarray
+    variance: np.ndarray
+
+
+@dataclass
 class PropertyField:
     """Result of a domain-aware kriging or simulation run.
 
@@ -46,6 +56,29 @@ class PropertyField:
     values: np.ndarray
     variance: np.ndarray
     domain_keys: List[DomainKey]
+
+    def for_domain(
+            self,
+            geo_model: gp.data.GeoModel,
+            domain_key: Union[DomainKey, DomainGroup],
+    ) -> DomainFieldResult:
+        """Pull out xyz + values/variance for one domain, or a merged group of them.
+
+        Accepts either a bare `DomainKey` (single domain) or a `DomainGroup` (pools
+        cells across every domain key in the group -- e.g. to get a merged domain's
+        cells back out as one array, matching how `run_kriging`/`run_simulation`
+        treated it). Cells whose domain wasn't actually populated (not in
+        `domain_configs` for this run) come back as `nan`, same as in `values` itself.
+        """
+        lith_array, fault_array, _ = compute_domains(geo_model)
+        mask = group_mask(lith_array, fault_array, domain_key).ravel()
+        cell_centers = geo_model.grid.regular_grid.values
+
+        return DomainFieldResult(
+            xyz=cell_centers[mask],
+            values=self.values.ravel()[mask],
+            variance=self.variance.ravel()[mask],
+        )
 
 
 def run_kriging(

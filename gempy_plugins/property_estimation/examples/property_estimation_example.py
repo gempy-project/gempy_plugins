@@ -136,6 +136,19 @@ conditioning_data.assign_domains(geo_model, lith_array, fault_array)
 plot_conditioning_data(geo_model, conditioning_data)
 
 # %%
+# Retrieving conditioning data per domain
+# -------------------------------------------
+# ``ConditioningData.for_domain`` pulls out the samples belonging to one domain -- or a
+# merged group of them, exactly like the ``domain_configs`` keys below -- once
+# ``assign_domains`` has run, returning a small object with just that subset's own
+# ``.xyz``/``.values`` arrays. Handy any time something domain-specific needs to be
+# done directly with the raw samples, e.g. fitting a variogram per domain.
+
+# %%
+rock3_samples = conditioning_data.for_domain(rock3_merged)
+rock3_samples.xyz.shape, rock3_samples.values.shape
+
+# %%
 # Kriging, with different settings per domain
 # -----------------------------------------------
 # A domain is processed only if it has an entry in ``domain_configs``, so kriging can
@@ -170,6 +183,17 @@ field = run_kriging(geo_model, conditioning_data, domain_configs)
 
 # %%
 plot_property_field(geo_model, field)
+
+# %%
+# Retrieving results per domain
+# ---------------------------------
+# ``PropertyField.for_domain`` mirrors this on the result side: xyz + values (+
+# variance) for one domain or a merged group, pulled straight out of the full-grid
+# arrays instead of off the raw samples:
+
+# %%
+rock3_result = field.for_domain(geo_model, rock3_merged)
+rock3_result.xyz.shape, rock3_result.values.shape
 
 # %%
 # Simulation
