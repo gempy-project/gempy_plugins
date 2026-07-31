@@ -30,6 +30,7 @@ from gempy_plugins.property_estimation.domains import compute_domains, describe_
 from gempy_plugins.property_estimation.kriging import KrigingDomainConfig, run_kriging
 from gempy_plugins.property_estimation.plotting import (
     plot_conditioning_data, plot_domains, plot_fault_blocks, plot_property_field,
+    plot_property_field_interactive,
 )
 from gempy_plugins.property_estimation.simulation import SimulationDomainConfig, run_simulation
 
@@ -204,3 +205,15 @@ simulation_configs = {
 }
 simulated_field = run_simulation(geo_model, conditioning_data, simulation_configs)
 plot_property_field(geo_model, simulated_field)
+
+# %%
+# Interactive inspection
+# -------------------------
+# ``plot_property_field`` above stays the simple default. For a more exploratory look,
+# ``plot_property_field_interactive`` gives each populated domain its own visibility
+# checkbox plus a two-sided min/max slider that thresholds just that domain's displayed
+# cells -- e.g. to isolate only the highest-value cells in one domain while hiding
+# another entirely.
+
+# %%
+plot_property_field_interactive(geo_model, simulated_field, domain_configs=simulation_configs)
