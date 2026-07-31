@@ -60,3 +60,19 @@ def require_sklearn():
     except ImportError:
         raise ImportError("The scikit-learn package is required to use this function.")
     return sklearn
+
+
+def require_gstools():
+    try:
+        import gstools
+    except ImportError:
+        raise ImportError("The gstools package is required to use this function.")
+    return gstools
+
+
+def require_pyvista():
+    try:
+        import pyvista
+    except ImportError:
+        raise ImportError("The pyvista package is required to use this function.")
+    return pyvista
