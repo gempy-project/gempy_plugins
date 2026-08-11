@@ -6,14 +6,6 @@
     return pd
 
 
-def require_pooch():
-    try:
-        import pooch
-    except ImportError:
-        raise ImportError("The pooch library is required to use this function.")
-    return pooch
-
-
 def require_gempy_legacy():
     try:
         import gempy_legacy
@@ -76,3 +68,27 @@ def require_pyvista():
     except ImportError:
         raise ImportError("The pyvista package is required to use this function.")
     return pyvista
+
+
+def require_geopandas():
+    try:
+        import geopandas
+    except ImportError:
+        raise ImportError("The geopandas package is required to use this function.")
+    return geopandas
+
+
+def require_rasterio():
+    try:
+        import rasterio
+    except ImportError:
+        raise ImportError("The rasterio package is required to use this function.")
+    return rasterio
+
+
+def require_shapely():
+    try:
+        import shapely
+    except ImportError:
+        raise ImportError("The shapely package is required to use this function.")
+    return shapely
