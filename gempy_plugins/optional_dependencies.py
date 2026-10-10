@@ -70,6 +70,16 @@ def require_pyvista():
     return pyvista
 
 
+def require_mmgpy():
+    try:
+        import mmgpy
+    except ImportError:
+        raise ImportError("The mmgpy package (MMG3D) is required to remesh volume meshes: pip install mmgpy")
+    return mmgpy
+
+
+
+
 def require_geopandas():
     try:
         import geopandas
