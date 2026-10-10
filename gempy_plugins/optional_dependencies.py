@@ -76,3 +76,12 @@ def require_pyvista():
     except ImportError:
         raise ImportError("The pyvista package is required to use this function.")
     return pyvista
+
+
+def require_mmgpy():
+    try:
+        import mmgpy
+    except ImportError:
+        raise ImportError("The mmgpy package (MMG3D) is required to remesh volume meshes: pip install mmgpy")
+    return mmgpy
+
