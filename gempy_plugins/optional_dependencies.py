@@ -6,6 +6,14 @@
     return pd
 
 
+def require_pooch():
+    try:
+        import pooch
+    except ImportError:
+        raise ImportError("The pooch library is required to use this function.")
+    return pooch
+
+
 def require_gempy_legacy():
     try:
         import gempy_legacy
@@ -68,6 +76,16 @@ def require_pyvista():
     except ImportError:
         raise ImportError("The pyvista package is required to use this function.")
     return pyvista
+
+
+def require_mmgpy():
+    try:
+        import mmgpy
+    except ImportError:
+        raise ImportError("The mmgpy package (MMG3D) is required to remesh volume meshes: pip install mmgpy")
+    return mmgpy
+
+
 
 
 def require_geopandas():
