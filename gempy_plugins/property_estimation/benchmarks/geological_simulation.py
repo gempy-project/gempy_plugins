@@ -15,15 +15,19 @@ import scipy
 
 from ..examples.geological_models import make_geological_model
 from ..geological_coordinates import GeologicalMetricField, AnisotropicGraph, GeologicalEmbedding
-from ..geological_coordinates.diagnostics import embedding_quality
+from ..geological_coordinates.diagnostics import embedding_quality, constant_metric_quality
+from ..geological_coordinates.analytical import bedding_orientation
 
 
 def run_benchmark(*, models=('horizontal', 'dipping', 'folded'), resolution=(24, 10, 24),
                   ratios=(5., 20.), stencil_radii=(1, 3), landmarks=(32,), dimensions=(6,),
                   features=(512,), realizations=8, simulate=False, device='cpu', length_scale=5.,
-                  distance_dtype='float32'):
+                  distance_dtype='float32', seeds=(0,), resolutions=None, length_scales=None,
+                  facies=False):
     reports = []
-    for geometry in models:
+    resolutions = (resolution,) if resolutions is None else resolutions
+    length_scales = (length_scale,) if length_scales is None else length_scales
+    for geometry, resolution in product(models, resolutions):
         start = perf_counter()
         model = make_geological_model(geometry, resolution=resolution)
         model_seconds = perf_counter() - start
@@ -32,39 +36,36 @@ def run_benchmark(*, models=('horizontal', 'dipping', 'folded'), resolution=(24,
             metric = GeologicalMetricField.from_gempy(model, 'lower', anisotropy_ratio=ratio)
             graph = AnisotropicGraph.from_metric(metric, stencil_radius=radius)
             graph_seconds = perf_counter() - start
-            for count, width in product(landmarks, dimensions):
+            orientation = bedding_orientation(metric)
+            is_constant = ratio == 1 or orientation['angular_deviation_max_degrees'] < np.degrees(1e-6)
+            analytical_spectral = {}
+            for count, width, seed in product(landmarks, dimensions, seeds):
                 start = perf_counter()
-                embedding = GeologicalEmbedding.from_graph(graph, landmarks=count, dimensions=width, distance_dtype=distance_dtype)
+                embedding = GeologicalEmbedding.from_graph(graph, landmarks=count, dimensions=width,
+                                                            seed=seed, distance_dtype=distance_dtype)
                 embedding_seconds = perf_counter() - start
-                report = dict(geometry=geometry, resolution=list(resolution), anisotropy_ratio=ratio,
-                              stencil_radius=radius, landmarks=count, dimensions=width,
-                              active_nodes=len(embedding.coordinates), directed_edges=graph.adjacency.nnz,
-                              distance_dtype=distance_dtype, geometry_seconds=model_seconds,
-                              graph_seconds=graph_seconds, embedding_seconds=embedding_seconds,
-                              graph_csr_bytes=sum(a.nbytes for a in (graph.adjacency.data, graph.adjacency.indices, graph.adjacency.indptr)),
-                              coordinate_bytes=embedding.coordinates.nbytes,
-                              quality=embedding_quality(graph, embedding, length_scale=length_scale))
-                if geometry in ('horizontal', 'dipping'):
-                    # Separate stencil error from Isomap error using a constant
-                    # tensor with the model's mean bedding normal on the same grid.
-                    normal = metric.normals[metric.active_mask].mean(axis=0)
-                    normal /= np.linalg.norm(normal)
-                    constant = GeologicalMetricField.from_gradients(
-                        metric.positions, np.tile(normal, (len(metric.positions), 1)),
-                        np.ones(metric.grid_shape, bool), anisotropy_ratio=ratio)
-                    reference = AnisotropicGraph.from_metric(constant, stencil_radius=radius)
-                    indices = np.random.default_rng(2).choice(len(reference.node_indices), 8, replace=False)
-                    errors = []
-                    tensor = constant.tensors([0])[0]
-                    for index in indices:
-                        delta = reference.positions - reference.positions[index]
-                        exact = np.sqrt(np.einsum('ni,ij,nj->n', delta, tensor, delta))
-                        valid = exact > 1e-9
-                        errors.extend((reference.shortest_paths([index])[0, valid] / exact[valid] - 1).tolist())
-                    report['constant_tensor_graph_relative_p90'] = float(np.percentile(errors, 90))
-                if simulate:
-                    report['spectral'] = [_spectral_benchmark(embedding, length_scale, n, realizations, device) for n in features]
-                reports.append(report)
+                for scale in length_scales:
+                    report = dict(geometry=geometry, resolution=list(resolution), anisotropy_ratio=ratio,
+                                  stencil_radius=radius, landmarks=count, dimensions=width, landmark_seed=seed,
+                                  length_scale=scale, components=len(embedding.projections),
+                                  active_nodes=len(embedding.coordinates), directed_edges=graph.adjacency.nnz,
+                                  distance_dtype=distance_dtype, geometry_seconds=model_seconds,
+                                  graph_seconds=graph_seconds, embedding_seconds=embedding_seconds,
+                                  graph_csr_bytes=sum(a.nbytes for a in (graph.adjacency.data, graph.adjacency.indices, graph.adjacency.indptr)),
+                                  coordinate_bytes=embedding.coordinates.nbytes,
+                                  quality=embedding_quality(graph, embedding, length_scale=scale))
+                    if is_constant:
+                        report['constant_metric_reference'] = constant_metric_quality(graph, embedding, length_scale=scale)
+                    if simulate:
+                        report['spectral'] = [_spectral_benchmark(embedding, scale, n, realizations, device) for n in features]
+                        if is_constant:
+                            if scale not in analytical_spectral:
+                                analytical = GeologicalEmbedding.from_constant_metric(graph)
+                                analytical_spectral[scale] = [_spectral_benchmark(analytical, scale, n, realizations, device) for n in features]
+                            report['analytical_spectral'] = analytical_spectral[scale]
+                    if facies:
+                        report['facies'] = [_facies_benchmark(graph, embedding, scale, n, realizations, device) for n in features]
+                    reports.append(report)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return dict(environment=dict(python=platform.python_version(), numpy=np.__version__, scipy=scipy.__version__,
                                  platform=platform.platform(), device=device),
@@ -111,21 +112,36 @@ def _spectral_benchmark(embedding, length_scale, frequencies, realizations, devi
                 torch=torch.__version__)
 
 
+def _facies_benchmark(graph, embedding, length_scale, frequencies, realizations, device):
+    from ..gaussian_fields import GaussianCovariance, GaussianFieldSimulator
+    from ..categorical_fields import TruncatedGaussianFacies, facies_diagnostics
+    simulator = GaussianFieldSimulator(embedding, GaussianCovariance(length_scale),
+                                       n_frequencies=frequencies, device=device)
+    fields = TruncatedGaussianFacies(simulator, (.3, .4, .3), names=('shale', 'limestone', 'sandstone')).simulate(
+        realizations=realizations, seed=13)
+    return dict(frequencies=frequencies, **facies_diagnostics(graph, fields))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--models', default='horizontal,dipping,folded')
     parser.add_argument('--resolution', default='24,10,24')
+    parser.add_argument('--resolutions', nargs='+', help='Multiple grids, e.g. 24,10,24 48,20,48')
     parser.add_argument('--ratios', default='5,20')
     parser.add_argument('--stencil-radii', default='1,3')
     parser.add_argument('--landmarks', default='32')
     parser.add_argument('--dimensions', default='6')
+    parser.add_argument('--seeds', default='0', help='Comma-separated landmark seeds')
     parser.add_argument('--features', default='512')
     parser.add_argument('--realizations', type=int, default=8)
     parser.add_argument('--length-scale', type=float, default=5.)
+    parser.add_argument('--length-scales', help='Comma-separated covariance scales')
     parser.add_argument('--distance-dtype', choices=('float32', 'float64'), default='float32')
     parser.add_argument('--simulate', action='store_true')
+    parser.add_argument('--facies', action='store_true', help='Also report truncated-Gaussian facies statistics')
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--output', help='Optional machine-readable JSON result path')
+    parser.add_argument('--summary', action='store_true', help='Print a compact table instead of full JSON')
     args = parser.parse_args()
     report = run_benchmark(
         models=args.models.split(','), resolution=tuple(map(int, args.resolution.split(','))),
@@ -133,12 +149,29 @@ def main():
         landmarks=tuple(map(int, args.landmarks.split(','))), dimensions=tuple(map(int, args.dimensions.split(','))),
         features=tuple(map(int, args.features.split(','))), realizations=args.realizations,
         length_scale=args.length_scale, distance_dtype=args.distance_dtype, simulate=args.simulate, device=args.device,
+        seeds=tuple(map(int, args.seeds.split(','))),
+        resolutions=[tuple(map(int, value.split(','))) for value in args.resolutions] if args.resolutions else None,
+        length_scales=tuple(map(float, args.length_scales.split(','))) if args.length_scales else None,
+        facies=args.facies,
     )
     text = json.dumps(report, indent=2, allow_nan=False)
     if args.output:
         with open(args.output, 'w') as stream:
             stream.write(text + '\n')
-    print(text)
+    if args.summary:
+        print('geometry grid ratio radius dims seed scale overlap distance_p90 covariance_p90 gate analytical_graph_cov analytical_embedding_cov')
+        for case in report['cases']:
+            quality = case['quality']
+            reference = case.get('constant_metric_reference', {})
+            print(case['geometry'], 'x'.join(map(str, case['resolution'])), case['anisotropy_ratio'],
+                  case['stencil_radius'], case['dimensions'], case['landmark_seed'], case['length_scale'],
+                  *[f'{quality[key]:.4f}' if quality[key] is not None else '-' for key in
+                    ('neighbor_overlap', 'distance_relative_p90', 'covariance_absolute_p90')],
+                  'pass' if quality['passes_provisional_targets'] else 'fail',
+                  *[f"{reference[key]['covariance_absolute_p90']:.4f}" if reference.get(key, {}).get('covariance_absolute_p90') is not None else '-'
+                    for key in ('graph_vs_analytical', 'embedding_vs_analytical')])
+    else:
+        print(text)
 
 
 if __name__ == '__main__':

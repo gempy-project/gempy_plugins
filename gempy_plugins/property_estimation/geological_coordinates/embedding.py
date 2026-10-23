@@ -119,6 +119,21 @@ class LandmarkGeologicalEmbedding:
                    graph.metric.grid_shape, projections, graph.fingerprint, metadata)
 
     @classmethod
+    def from_constant_metric(cls, graph, *, normal_tolerance=1e-6):
+        """Analytical reference for constant tensors, with independent components.
+
+        Within a component these coordinates ignore holes and nonconvex boundaries.
+        Use them to diagnose graph/embedding error, not to bypass geological barriers.
+        """
+        from .analytical import constant_metric_coordinates
+        coordinates = constant_metric_coordinates(graph.metric, normal_tolerance=normal_tolerance)
+        metadata = dict(graph.metric.metadata, coordinate_method='constant_metric',
+                        anisotropy_ratio=graph.metric.anisotropy_ratio,
+                        reference_distance='unconstrained_straight_line')
+        return cls(coordinates.astype(np.float32), graph.component_ids.copy(), graph.node_indices.copy(),
+                   graph.metric.grid_shape, [], graph.fingerprint, metadata)
+
+    @classmethod
     def from_gempy(cls, model, unit, *, anisotropy_ratio=20.0, landmarks=32,
                    dimensions=6, connectivity=26, stencil_radius=1, seed=0, structural_group=None, fault_block=None):
         metric = GeologicalMetricField.from_gempy(

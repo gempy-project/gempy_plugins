@@ -3,19 +3,31 @@ import numpy as np
 import gempy as gp
 
 
-def make_geological_model(geometry='folded', resolution=(24, 10, 24), *, compute_gradients=True):
+MODEL_GEOMETRIES = ('horizontal', 'dipping', 'folded', 'syncline', 'gentle_fold',
+                    'tight_fold', 'thin_layer', 'faulted')
+
+
+def make_geological_model(geometry='folded', resolution=(24, 10, 24), *, compute_gradients=True,
+                          fold_amplitude=None, layer_thickness=None):
     """Build two interpolated horizons from explicit contacts and orientations.
 
-    ``horizontal``, ``dipping``, ``folded`` (anticline), and ``syncline`` use the
-    actual GemPy interpolator. The input formula only generates observations;
-    the resulting scalar field and gradients come from GemPy.
+    All models use the actual GemPy interpolator. The input formula only generates
+    observations; the resulting scalar field and gradients come from GemPy.
+    ``gentle_fold``/``tight_fold`` vary curvature; ``thin_layer`` has six units of
+    vertical separation instead of thirty. Amplitude and separation can also be
+    supplied explicitly (physical units, not normal-to-bedding thickness).
     """
-    if geometry not in ('horizontal', 'dipping', 'folded', 'syncline', 'faulted'):
+    if geometry not in MODEL_GEOMETRIES:
         raise ValueError("Unknown example geometry")
-    amplitude = {'horizontal': 0., 'dipping': 0., 'folded': 18., 'syncline': -18., 'faulted': 18.}[geometry]
+    amplitude = {'horizontal': 0., 'dipping': 0., 'folded': 18., 'syncline': -18., 'faulted': 18.,
+                 'gentle_fold': 8., 'tight_fold': 30., 'thin_layer': 18.}[geometry]
+    amplitude = amplitude if fold_amplitude is None else float(fold_amplitude)
+    thickness = (6. if geometry == 'thin_layer' else 30.) if layer_thickness is None else float(layer_thickness)
+    if not np.isfinite(amplitude) or not np.isfinite(thickness) or thickness <= 0:
+        raise ValueError("Fold amplitude must be finite and layer thickness finite and positive")
     dip = .3 if geometry == 'dipping' else 0.
     elements = []
-    for name, offset, color in [('upper', 58., '#e6c06e'), ('lower', 28., '#748da6')]:
+    for name, offset, color in [('upper', 28. + thickness, '#e6c06e'), ('lower', 28., '#748da6')]:
         x, y = np.meshgrid([10., 30., 50., 70., 90.], [8., 32.], indexing='ij')
         x, y = x.ravel(), y.ravel()
         z = offset + amplitude * (1 - ((x - 50) / 50) ** 2) + dip * (x - 50)

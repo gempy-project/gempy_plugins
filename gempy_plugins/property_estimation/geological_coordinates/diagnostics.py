@@ -2,10 +2,24 @@
 import numpy as np
 
 from ._utils import positive_integer
+from .analytical import bedding_orientation, constant_metric_coordinates
+
+
+def _validation_sources(graph, embedding, samples, seed):
+    if graph.fingerprint != embedding.graph_fingerprint:
+        raise ValueError("Embedding and reference graph do not match")
+    landmarks = (np.concatenate([p.landmark_indices for p in embedding.projections])
+                 if embedding.projections else np.empty(0, dtype=int))
+    candidates = np.setdiff1d(np.arange(len(graph.node_indices)), landmarks)
+    held_out = bool(len(candidates))
+    if not held_out:
+        candidates = np.arange(len(graph.node_indices))
+    sources = np.random.default_rng(seed).choice(candidates, min(samples, len(candidates)), replace=False)
+    return sources, held_out
 
 
 def embedding_quality(graph, embedding, *, length_scale, samples=32, neighbors=16, seed=1,
-                      cartesian_normal=(0., 0., 1.)):
+                      cartesian_normal=None):
     """Compare held-out-source graph distances against the embedding.
 
     Local errors cover nonzero distances up to three Gaussian length scales.
@@ -13,21 +27,17 @@ def embedding_quality(graph, embedding, *, length_scale, samples=32, neighbors=1
     arbitrary penalty for equivalent neighbors on a regular lattice. The
     covariance target here is a pairwise diagnostic, not an assertion that a
     Gaussian kernel of arbitrary graph distances forms a PSD covariance matrix.
+    The Cartesian comparator uses the dominant unoriented bedding normal unless
+    an explicit normal is supplied. Its orientation and spread are reported.
     """
     if not np.isfinite(length_scale) or length_scale <= 0:
         raise ValueError("length_scale must be finite and positive")
     samples = positive_integer(samples, 'samples')
     neighbors = positive_integer(neighbors, 'neighbors')
-    if graph.fingerprint != embedding.graph_fingerprint:
-        raise ValueError("Embedding and reference graph do not match")
-    landmarks = np.concatenate([p.landmark_indices for p in embedding.projections])
-    candidates = np.setdiff1d(np.arange(len(graph.node_indices)), landmarks)
-    held_out = bool(len(candidates))
-    if not held_out:
-        candidates = np.arange(len(graph.node_indices))
-    sources = np.random.default_rng(seed).choice(candidates, min(samples, len(candidates)), replace=False)
+    sources, held_out = _validation_sources(graph, embedding, samples, seed)
     distance_errors, covariance_errors, cartesian_errors, overlaps = [], [], [], []
-    normal = np.asarray(cartesian_normal, dtype=float)
+    orientation = bedding_orientation(graph.metric)
+    normal = np.asarray(orientation['normal'] if cartesian_normal is None else cartesian_normal, dtype=float)
     if normal.shape != (3,) or not np.isfinite(normal).all() or np.linalg.norm(normal) == 0:
         raise ValueError("cartesian_normal must be a finite, nonzero XYZ vector")
     normal = normal / np.linalg.norm(normal)
@@ -59,12 +69,99 @@ def embedding_quality(graph, embedding, *, length_scale, samples=32, neighbors=1
                   distance_relative_p90=float(np.percentile(distance_errors, 90)) if distance_errors else None,
                   covariance_absolute_p90=float(np.percentile(covariance_errors, 90)) if covariance_errors else None,
                   cartesian_covariance_absolute_p90=float(np.percentile(cartesian_errors, 90)) if cartesian_errors else None,
+                  cartesian_normal=normal.tolist(), bedding_orientation=orientation,
                   spectrum=embedding.diagnostics)
     report['passes_provisional_targets'] = bool(
         distance_errors and overlaps and report['neighbor_overlap'] >= .9
         and report['distance_relative_p90'] <= .15 and report['covariance_absolute_p90'] <= .05
     )
     return report
+
+
+def constant_metric_quality(graph, embedding, *, length_scale, samples=32, seed=1):
+    """Separate graph and embedding errors against an analytical constant tensor.
+
+    Both errors use identical held-out pairs within three *analytical* length
+    scales. Straight-line distances ignore intra-component barriers; excess graph
+    distance includes both stencil bias and any domain-confinement detours.
+    Raises for spatially varying metrics rather than mislabelling a fitted tensor
+    as geological ground truth.
+    """
+    if not np.isfinite(length_scale) or length_scale <= 0:
+        raise ValueError("length_scale must be finite and positive")
+    samples = positive_integer(samples, 'samples')
+    coordinates = constant_metric_coordinates(graph.metric)
+    sources, held_out = _validation_sources(graph, embedding, samples, seed)
+    errors = {name: {'distance': [], 'covariance': []} for name in ('graph', 'embedding')}
+    for source in sources:
+        exact = np.linalg.norm(coordinates - coordinates[source], axis=1)
+        local = ((exact > length_scale * 1e-9) & (exact <= 3 * length_scale)
+                 & (graph.component_ids == graph.component_ids[source]))
+        target = np.exp(-.5 * (exact[local] / length_scale) ** 2)
+        distances = dict(graph=graph.shortest_paths([source])[0],
+                         embedding=np.linalg.norm(embedding.coordinates - embedding.coordinates[source], axis=1))
+        for name, distance in distances.items():
+            errors[name]['distance'].extend((np.abs(distance[local] - exact[local]) / exact[local]).tolist())
+            errors[name]['covariance'].extend(np.abs(np.exp(-.5 * (distance[local] / length_scale) ** 2) - target).tolist())
+    report = dict(reference='unconstrained_constant_tensor', sources=len(sources), held_out_sources=held_out,
+                  local_pairs=len(errors['graph']['distance']), length_scale=float(length_scale))
+    for name, values in errors.items():
+        report[name + '_vs_analytical'] = dict(
+            distance_relative_p90=float(np.percentile(values['distance'], 90)) if values['distance'] else None,
+            covariance_absolute_p90=float(np.percentile(values['covariance'], 90)) if values['covariance'] else None,
+        )
+    return report
+
+
+def graph_refinement_quality(graph, reference, *, length_scale, samples=8, seed=1):
+    """Compare two graphs at exactly coincident voxel centers, without snapping.
+
+    The reference lattice must refine each original axis by an odd integer. Domain
+    changes and reachability mismatches are reported separately from finite local
+    errors. A finer/wider graph is a convergence reference, not geological truth.
+    """
+    if not np.isfinite(length_scale) or length_scale <= 0:
+        raise ValueError("length_scale must be finite and positive")
+    samples = positive_integer(samples, 'samples')
+    shape, fine_shape = np.asarray(graph.metric.grid_shape), np.asarray(reference.metric.grid_shape)
+    factors = fine_shape // shape
+    if np.any(fine_shape % shape) or np.any(factors < 1) or np.any(factors % 2 != 1):
+        raise ValueError("Reference grid must be an odd-integer refinement on every axis")
+    if graph.metric.anisotropy_ratio != reference.metric.anisotropy_ratio:
+        raise ValueError("Graph anisotropy ratios must match")
+    ijk = np.column_stack(np.unravel_index(graph.node_indices, tuple(shape)))
+    fine_ijk = ijk * factors + (factors - 1) // 2
+    flat = np.ravel_multi_index(fine_ijk.T, tuple(fine_shape))
+    if not np.allclose(graph.positions, reference.metric.positions[flat], rtol=0., atol=1e-8):
+        raise ValueError("Reference voxel centers must coincide in physical coordinates")
+    mapping = np.full(reference.metric.active_mask.size, -1, dtype=int)
+    mapping[reference.node_indices] = np.arange(len(reference.node_indices))
+    mapped = mapping[flat]
+    common = np.flatnonzero(mapped >= 0)
+    if not len(common):
+        raise ValueError("No original active nodes remain active on the reference grid")
+    sources = np.random.default_rng(seed).choice(common, min(samples, len(common)), replace=False)
+    relative, covariance = [], []
+    lost, gained = 0, 0
+    for source in sources:
+        coarse = graph.shortest_paths([source])[0, common]
+        fine = reference.shortest_paths([mapped[source]])[0, mapped[common]]
+        lost += int(np.sum(np.isfinite(coarse) & ~np.isfinite(fine)))
+        gained += int(np.sum(~np.isfinite(coarse) & np.isfinite(fine)))
+        local = np.isfinite(coarse) & np.isfinite(fine) & (fine > length_scale * 1e-9) & (fine <= 3 * length_scale)
+        relative.extend((np.abs(coarse[local] - fine[local]) / fine[local]).tolist())
+        covariance.extend(np.abs(np.exp(-.5 * (coarse[local] / length_scale) ** 2)
+                                 - np.exp(-.5 * (fine[local] / length_scale) ** 2)).tolist())
+    normals = graph.metric.normals[graph.node_indices[common]]
+    fine_normals = reference.metric.normals[flat[common]]
+    angles = np.degrees(np.arccos(np.clip(np.abs(np.sum(normals * fine_normals, axis=1)), 0., 1.)))
+    return dict(reference='refined_graph_at_coincident_centers', refinement_factors=factors.tolist(),
+                reference_grid_shape=fine_shape.tolist(), reference_stencil_radius=reference.stencil_radius,
+                sources=len(sources), matched_nodes=len(common), unmatched_active_nodes=int(np.sum(mapped < 0)),
+                reachability_lost_pairs=lost, reachability_gained_pairs=gained, local_pairs=len(relative),
+                length_scale=float(length_scale), normal_difference_p90_degrees=float(np.percentile(angles, 90)),
+                distance_relative_p90=float(np.percentile(relative, 90)) if relative else None,
+                covariance_absolute_p90=float(np.percentile(covariance, 90)) if covariance else None)
 
 
 def directional_variograms(graph, realizations, *, max_separation, samples=4096, seed=0):

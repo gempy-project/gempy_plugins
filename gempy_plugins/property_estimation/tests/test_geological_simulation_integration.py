@@ -8,7 +8,7 @@ from gempy_plugins.property_estimation.geological_coordinates import Anisotropic
 from gempy_plugins.property_estimation.geological_coordinates.diagnostics import embedding_quality
 
 
-@pytest.mark.parametrize('geometry', ['horizontal', 'dipping', 'folded'])
+@pytest.mark.parametrize('geometry', ['horizontal', 'dipping', 'folded', 'syncline', 'gentle_fold', 'tight_fold', 'thin_layer'])
 def test_gempy_voxel_gradients_match_world_coordinate_derivatives(geometry):
     model = make_geological_model(geometry, resolution=(10, 5, 10))
     metric = GeologicalMetricField.from_gempy(model, 'lower')
