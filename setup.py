@@ -19,6 +19,10 @@ setup(
         'Programming Language :: Python :: 3.10'
     ],
     python_requires='>=3.10',
+    extras_require={
+        'geological-simulation': ['gempy', 'numpy', 'scipy', 'torch'],
+        'geological-simulation-viz': ['matplotlib', 'pyvista'],
+    },
     setup_requires=['setuptools_scm'],
     use_scm_version={
             "root"            : ".",

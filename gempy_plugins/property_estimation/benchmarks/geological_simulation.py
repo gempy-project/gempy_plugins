@@ -1,0 +1,145 @@
+"""Compare graph stencils, landmark embeddings, and optional spectral ensembles.
+
+Defaults deliberately include both the failing 20:1/26-neighbor baseline and
+the passing 5:1/wider-stencil folded example. JSON output records all outcomes.
+"""
+import argparse
+from itertools import product
+import json
+import platform
+import resource
+from time import perf_counter
+
+import numpy as np
+import scipy
+
+from ..examples.geological_models import make_geological_model
+from ..geological_coordinates import GeologicalMetricField, AnisotropicGraph, GeologicalEmbedding
+from ..geological_coordinates.diagnostics import embedding_quality
+
+
+def run_benchmark(*, models=('horizontal', 'dipping', 'folded'), resolution=(24, 10, 24),
+                  ratios=(5., 20.), stencil_radii=(1, 3), landmarks=(32,), dimensions=(6,),
+                  features=(512,), realizations=8, simulate=False, device='cpu', length_scale=5.,
+                  distance_dtype='float32'):
+    reports = []
+    for geometry in models:
+        start = perf_counter()
+        model = make_geological_model(geometry, resolution=resolution)
+        model_seconds = perf_counter() - start
+        for ratio, radius in product(ratios, stencil_radii):
+            start = perf_counter()
+            metric = GeologicalMetricField.from_gempy(model, 'lower', anisotropy_ratio=ratio)
+            graph = AnisotropicGraph.from_metric(metric, stencil_radius=radius)
+            graph_seconds = perf_counter() - start
+            for count, width in product(landmarks, dimensions):
+                start = perf_counter()
+                embedding = GeologicalEmbedding.from_graph(graph, landmarks=count, dimensions=width, distance_dtype=distance_dtype)
+                embedding_seconds = perf_counter() - start
+                report = dict(geometry=geometry, resolution=list(resolution), anisotropy_ratio=ratio,
+                              stencil_radius=radius, landmarks=count, dimensions=width,
+                              active_nodes=len(embedding.coordinates), directed_edges=graph.adjacency.nnz,
+                              distance_dtype=distance_dtype, geometry_seconds=model_seconds,
+                              graph_seconds=graph_seconds, embedding_seconds=embedding_seconds,
+                              graph_csr_bytes=sum(a.nbytes for a in (graph.adjacency.data, graph.adjacency.indices, graph.adjacency.indptr)),
+                              coordinate_bytes=embedding.coordinates.nbytes,
+                              quality=embedding_quality(graph, embedding, length_scale=length_scale))
+                if geometry in ('horizontal', 'dipping'):
+                    # Separate stencil error from Isomap error using a constant
+                    # tensor with the model's mean bedding normal on the same grid.
+                    normal = metric.normals[metric.active_mask].mean(axis=0)
+                    normal /= np.linalg.norm(normal)
+                    constant = GeologicalMetricField.from_gradients(
+                        metric.positions, np.tile(normal, (len(metric.positions), 1)),
+                        np.ones(metric.grid_shape, bool), anisotropy_ratio=ratio)
+                    reference = AnisotropicGraph.from_metric(constant, stencil_radius=radius)
+                    indices = np.random.default_rng(2).choice(len(reference.node_indices), 8, replace=False)
+                    errors = []
+                    tensor = constant.tensors([0])[0]
+                    for index in indices:
+                        delta = reference.positions - reference.positions[index]
+                        exact = np.sqrt(np.einsum('ni,ij,nj->n', delta, tensor, delta))
+                        valid = exact > 1e-9
+                        errors.extend((reference.shortest_paths([index])[0, valid] / exact[valid] - 1).tolist())
+                    report['constant_tensor_graph_relative_p90'] = float(np.percentile(errors, 90))
+                if simulate:
+                    report['spectral'] = [_spectral_benchmark(embedding, length_scale, n, realizations, device) for n in features]
+                reports.append(report)
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return dict(environment=dict(python=platform.python_version(), numpy=np.__version__, scipy=scipy.__version__,
+                                 platform=platform.platform(), device=device),
+                process_peak_rss_bytes=int(peak * (1 if platform.system() == 'Darwin' else 1024)),
+                cases=reports)
+
+
+def _spectral_benchmark(embedding, length_scale, frequencies, realizations, device):
+    from ..gaussian_fields import GaussianCovariance, GaussianFieldSimulator
+    import torch
+    cuda = torch.device(device).type == 'cuda'
+    if cuda:
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+    start = perf_counter()
+    simulator = GaussianFieldSimulator(embedding, GaussianCovariance(length_scale), n_frequencies=frequencies, device=device)
+    if cuda:
+        torch.cuda.synchronize(device)
+    setup_seconds = perf_counter() - start
+    for batch in simulator.iter_simulate(realizations=1, seed=1):
+        del batch
+    if cuda:
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+    timings = []
+    for repeat in range(3):
+        start = perf_counter()
+        for batch in simulator.iter_simulate(realizations=realizations, seed=repeat):
+            del batch
+        if cuda:
+            torch.cuda.synchronize(device)
+        timings.append(perf_counter() - start)
+    seconds = float(np.median(timings))
+    nodes = np.random.default_rng(1).choice(len(embedding.coordinates), min(64, len(embedding.coordinates)), replace=False)
+    delta = embedding.coordinates[nodes, None, :] - embedding.coordinates[None, nodes, :]
+    target = simulator.covariance(np.linalg.norm(delta, axis=-1))
+    target *= embedding.component_ids[nodes, None] == embedding.component_ids[None, nodes]
+    error = np.abs(simulator.finite_covariance(nodes).cpu().numpy() - target)
+    return dict(frequencies=frequencies, real_basis_columns=2 * frequencies, realizations=realizations,
+                setup_seconds=setup_seconds, ensemble_seconds_median=seconds,
+                ensemble_seconds_repeats=timings, seconds_per_realization=seconds / realizations,
+                uncached_basis_bytes=simulator.basis_cache_bytes, covariance_absolute_p90=float(np.percentile(error, 90)),
+                peak_cuda_allocated_bytes=int(torch.cuda.max_memory_allocated(device)) if cuda else None,
+                torch=torch.__version__)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--models', default='horizontal,dipping,folded')
+    parser.add_argument('--resolution', default='24,10,24')
+    parser.add_argument('--ratios', default='5,20')
+    parser.add_argument('--stencil-radii', default='1,3')
+    parser.add_argument('--landmarks', default='32')
+    parser.add_argument('--dimensions', default='6')
+    parser.add_argument('--features', default='512')
+    parser.add_argument('--realizations', type=int, default=8)
+    parser.add_argument('--length-scale', type=float, default=5.)
+    parser.add_argument('--distance-dtype', choices=('float32', 'float64'), default='float32')
+    parser.add_argument('--simulate', action='store_true')
+    parser.add_argument('--device', default='cpu')
+    parser.add_argument('--output', help='Optional machine-readable JSON result path')
+    args = parser.parse_args()
+    report = run_benchmark(
+        models=args.models.split(','), resolution=tuple(map(int, args.resolution.split(','))),
+        ratios=tuple(map(float, args.ratios.split(','))), stencil_radii=tuple(map(int, args.stencil_radii.split(','))),
+        landmarks=tuple(map(int, args.landmarks.split(','))), dimensions=tuple(map(int, args.dimensions.split(','))),
+        features=tuple(map(int, args.features.split(','))), realizations=args.realizations,
+        length_scale=args.length_scale, distance_dtype=args.distance_dtype, simulate=args.simulate, device=args.device,
+    )
+    text = json.dumps(report, indent=2, allow_nan=False)
+    if args.output:
+        with open(args.output, 'w') as stream:
+            stream.write(text + '\n')
+    print(text)
+
+
+if __name__ == '__main__':
+    main()
