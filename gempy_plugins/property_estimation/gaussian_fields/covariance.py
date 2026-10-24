@@ -8,9 +8,9 @@ import numpy as np
 class GaussianCovariance:
     """C(h) = variance * exp(-h**2 / (2 * length_scale**2)).
 
-    With the ratio-only geological metric, length_scale is the perpendicular
-    physical scale; the lateral scale is anisotropy_ratio * length_scale for
-    a constant bedding orientation.
+    Local physical scales are length_scale * continuity_scale perpendicular to
+    bedding, and additionally multiplied by anisotropy_ratio parallel to bedding.
+    These describe the intended local metric; embedding distortion is separate.
     """
     length_scale: float = 1.0
     variance: float = 1.0

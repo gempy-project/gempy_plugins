@@ -47,14 +47,24 @@ class GaussianFieldSimulator:
                                              self._coordinates, self._component_ids, frequencies)
         self._basis_cache = None
 
+    def _basis_at(self, coordinates):
+        q = self.torch.as_tensor(coordinates, device=self.device, dtype=self.dtype)
+        phase = q @ self._frequencies.T
+        basis = self.torch.cat((self.torch.cos(phase), self.torch.sin(phase)), dim=1)
+        return basis * np.sqrt(self.covariance.variance / self.n_frequencies)
+
     def _basis(self, indices):
         if self._basis_cache is not None:
             index = self.torch.as_tensor(indices, dtype=self.torch.long, device=self.device)
             return self._basis_cache[index]
-        q = self.torch.as_tensor(self._coordinates[indices], device=self.device, dtype=self.dtype)
-        phase = q @ self._frequencies.T
-        basis = self.torch.cat((self.torch.cos(phase), self.torch.sin(phase)), dim=1)
-        return basis * np.sqrt(self.covariance.variance / self.n_frequencies)
+        return self._basis_at(self._coordinates[indices])
+
+    def _draw_coefficients(self, seed, component, first, stop):
+        coefficients = np.stack([
+            np.random.default_rng(np.random.SeedSequence([seed, component, realization])).normal(size=2 * self.n_frequencies)
+            for realization in range(first, stop)
+        ])
+        return self.torch.as_tensor(coefficients, dtype=self.dtype, device=self.device)
 
     @property
     def basis_cache_bytes(self):
@@ -86,7 +96,7 @@ class GaussianFieldSimulator:
         """Actual covariance of this finite-feature simulator at node indices.
 
         Returns a device tensor. Cross-component covariance is exactly zero.
-        This is the covariance to use for future conditioning; it is generally
+        This is the covariance used for conditioning; it is generally
         different from the infinite-feature target Gaussian covariance.
         """
         left = self._validate_indices(left)
@@ -101,6 +111,26 @@ class GaussianFieldSimulator:
         if indices.ndim != 1 or not np.issubdtype(indices.dtype, np.integer) or np.any(indices < 0) or np.any(indices >= len(self._coordinates)):
             raise ValueError("Expected valid integer active-node indices")
         return indices
+
+    def _observation_basis(self, observations):
+        """Validate observation locations and evaluate the fixed spectral basis."""
+        from ..geological_coordinates import GeologicalPoints
+        if isinstance(observations, GeologicalPoints):
+            if observations.embedding_fingerprint != self.embedding.fingerprint:
+                raise ValueError("Observation coordinates belong to a different embedding")
+            coordinates = np.asarray(observations.coordinates)
+            components = np.asarray(observations.component_ids)
+            if (coordinates.ndim != 2 or not len(coordinates)
+                    or coordinates.shape[1] != self._coordinates.shape[1] or not np.isfinite(coordinates).all()):
+                raise ValueError("Observation coordinates must be finite with the embedding's width")
+            if (components.shape != (len(coordinates),) or not np.issubdtype(components.dtype, np.integer)
+                    or not np.isin(components, self._component_ids).all()):
+                raise ValueError("Observations require valid geological component IDs")
+            return self._basis_at(coordinates), coordinates, components
+        nodes = self._validate_indices(observations)
+        if not len(nodes):
+            raise ValueError("At least one observation is required")
+        return self._basis(nodes), self._coordinates[nodes], self._component_ids[nodes]
 
     def iter_simulate(self, *, realizations=1, seed=0, mean=0.0, point_chunk_size=8192,
                       realization_batch_size=16, output_device='cpu'):
@@ -119,11 +149,7 @@ class GaussianFieldSimulator:
             values = self.torch.empty((stop - first, len(self._coordinates)), dtype=self.dtype, device=output_device)
             with self.torch.no_grad():
                 for component, nodes in components:
-                    coefficients = np.stack([
-                        np.random.default_rng(np.random.SeedSequence([seed, component, realization])).normal(size=2 * self.n_frequencies)
-                        for realization in range(first, stop)
-                    ])
-                    coefficients = self.torch.as_tensor(coefficients, dtype=self.dtype, device=self.device)
+                    coefficients = self._draw_coefficients(seed, component, first, stop)
                     for start in range(0, len(nodes), point_chunk_size):
                         indices = nodes[start:start + point_chunk_size]
                         chunk = coefficients @ self._basis(indices).T + mean
@@ -147,3 +173,13 @@ class GaussianFieldSimulator:
     def simulate_continuous(self, **kwargs):
         """Gaussian continuous properties with constant mean and covariance variance."""
         return self.simulate(**kwargs)
+
+    def condition(self, observations, values, *, mean=0., noise_variance=0., rank_tolerance=1e-12):
+        """Prepare continuous conditioning at active-node indices or GeologicalPoints.
+
+        Zero noise variance denotes exact observations. Positive variances describe
+        independent Gaussian measurement errors in squared property units.
+        """
+        from .conditioning import ConditionalGaussianField
+        return ConditionalGaussianField(self, observations, values, mean=mean,
+                                        noise_variance=noise_variance, rank_tolerance=rank_tolerance)
