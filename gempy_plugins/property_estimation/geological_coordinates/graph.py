@@ -1,4 +1,4 @@
-"""Domain-safe, sparse voxel graph and CPU reference shortest paths."""
+"""Domain-safe sparse graphs and CPU reference shortest paths."""
 from dataclasses import dataclass
 from itertools import product
 from math import gcd
@@ -17,7 +17,7 @@ class AnisotropicGraph:
     adjacency: csr_matrix
     node_indices: np.ndarray
     component_ids: np.ndarray
-    connectivity: int
+    connectivity: int | str
     stencil_radius: int = 1
 
     @classmethod
@@ -28,6 +28,8 @@ class AnisotropicGraph:
         domain label, including cells touched only at corners/edges. Radius > 1
         adds primitive lattice directions to measure/reduce directional bias.
         """
+        if len(metric.grid_shape) != 3:
+            raise ValueError("Voxel graph construction requires a three-dimensional lattice")
         if connectivity not in (6, 18, 26):
             raise ValueError("connectivity must be 6, 18, or 26")
         stencil_radius = positive_integer(stencil_radius, 'stencil_radius')
@@ -73,6 +75,16 @@ class AnisotropicGraph:
                            shape=(len(nodes), len(nodes))).tocsr()
         _, components = connected_components(graph, directed=False)
         return cls(metric, graph, nodes, components, connectivity, stencil_radius)
+
+    @classmethod
+    def from_tetrahedral_mesh(cls, mesh, gradients, **kwargs):
+        """Cell-centered graph through shared faces, blocked by units and faults.
+
+        Gradients and optional scale maps have one entry per mesh tetrahedron.
+        See ``tetrahedral.graph_from_tetrahedral_mesh`` for the edge-cost rule.
+        """
+        from .tetrahedral import graph_from_tetrahedral_mesh
+        return graph_from_tetrahedral_mesh(mesh, gradients, **kwargs)
 
     @property
     def positions(self):

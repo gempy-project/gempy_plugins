@@ -41,6 +41,10 @@ def embedding_quality(graph, embedding, *, length_scale, samples=32, neighbors=1
     if normal.shape != (3,) or not np.isfinite(normal).all() or np.linalg.norm(normal) == 0:
         raise ValueError("cartesian_normal must be a finite, nonzero XYZ vector")
     normal = normal / np.linalg.norm(normal)
+    parallel, perpendicular = graph.metric.local_scales()
+    # A single representative constant comparator, explicitly reported. Averaging
+    # tensor eigenvalues avoids silently calling a varying-scale field Cartesian.
+    lateral, vertical = float(np.mean(parallel ** -2)), float(np.mean(perpendicular ** -2))
     positions = graph.positions
     for source in sources:
         reference = graph.shortest_paths([source])[0]
@@ -53,8 +57,7 @@ def embedding_quality(graph, embedding, *, length_scale, samples=32, neighbors=1
         covariance_errors.extend(np.abs(np.exp(-.5 * (approximate[local] / length_scale) ** 2)
                                         - np.exp(-.5 * (reference[local] / length_scale) ** 2)).tolist())
         delta = positions[local] - positions[source]
-        lateral = graph.metric.anisotropy_ratio ** -2
-        cartesian_squared = lateral * np.sum(delta ** 2, axis=1) + (1 - lateral) * (delta @ normal) ** 2
+        cartesian_squared = lateral * np.sum(delta ** 2, axis=1) + (vertical - lateral) * (delta @ normal) ** 2
         cartesian_errors.extend(np.abs(np.exp(-.5 * cartesian_squared / length_scale ** 2)
                                       - np.exp(-.5 * (reference[local] / length_scale) ** 2)).tolist())
         indices = np.flatnonzero(valid)
@@ -70,6 +73,7 @@ def embedding_quality(graph, embedding, *, length_scale, samples=32, neighbors=1
                   covariance_absolute_p90=float(np.percentile(covariance_errors, 90)) if covariance_errors else None,
                   cartesian_covariance_absolute_p90=float(np.percentile(cartesian_errors, 90)) if cartesian_errors else None,
                   cartesian_normal=normal.tolist(), bedding_orientation=orientation,
+                  cartesian_parallel_scale=lateral ** -.5, cartesian_perpendicular_scale=vertical ** -.5,
                   spectrum=embedding.diagnostics)
     report['passes_provisional_targets'] = bool(
         distance_errors and overlaps and report['neighbor_overlap'] >= .9
@@ -127,13 +131,14 @@ def graph_refinement_quality(graph, reference, *, length_scale, samples=8, seed=
     factors = fine_shape // shape
     if np.any(fine_shape % shape) or np.any(factors < 1) or np.any(factors % 2 != 1):
         raise ValueError("Reference grid must be an odd-integer refinement on every axis")
-    if graph.metric.anisotropy_ratio != reference.metric.anisotropy_ratio:
-        raise ValueError("Graph anisotropy ratios must match")
     ijk = np.column_stack(np.unravel_index(graph.node_indices, tuple(shape)))
     fine_ijk = ijk * factors + (factors - 1) // 2
     flat = np.ravel_multi_index(fine_ijk.T, tuple(fine_shape))
     if not np.allclose(graph.positions, reference.metric.positions[flat], rtol=0., atol=1e-8):
         raise ValueError("Reference voxel centers must coincide in physical coordinates")
+    for coarse, fine in zip(graph.metric.local_scales(graph.node_indices), reference.metric.local_scales(flat)):
+        if not np.allclose(coarse, fine, rtol=1e-10, atol=0):
+            raise ValueError("Graph continuity scales and anisotropy ratios must match at coincident centers")
     mapping = np.full(reference.metric.active_mask.size, -1, dtype=int)
     mapping[reference.node_indices] = np.arange(len(reference.node_indices))
     mapped = mapping[flat]

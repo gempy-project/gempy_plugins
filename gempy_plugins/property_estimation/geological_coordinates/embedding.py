@@ -49,6 +49,8 @@ class LandmarkGeologicalEmbedding:
     have trailing zero columns; ``projections`` records their effective rank.
     Distances between different components are undefined, even if their stored
     coordinates happen to coincide. Treat arrays as immutable cache artifacts.
+    ``grid_shape`` is the storage shape: a voxel lattice, or ``(tetrahedron_count,)``
+    for a cell-centered mesh embedding. ``node_indices`` maps to that storage.
     """
     coordinates: np.ndarray
     component_ids: np.ndarray
@@ -113,7 +115,7 @@ class LandmarkGeologicalEmbedding:
         metadata = dict(graph.metric.metadata, landmarks=landmarks, dimensions=dimensions,
                         seed=int(seed), placement=placement, distance_dtype=distance_dtype.name,
                         connectivity=graph.connectivity, stencil_radius=graph.stencil_radius,
-                        anisotropy_ratio=graph.metric.anisotropy_ratio,
+                        **graph.metric.scale_metadata,
                         invalid_gradient_count=graph.metric.invalid_gradient_count)
         return cls(coordinates, graph.component_ids.copy(), graph.node_indices.copy(),
                    graph.metric.grid_shape, projections, graph.fingerprint, metadata)
@@ -128,17 +130,19 @@ class LandmarkGeologicalEmbedding:
         from .analytical import constant_metric_coordinates
         coordinates = constant_metric_coordinates(graph.metric, normal_tolerance=normal_tolerance)
         metadata = dict(graph.metric.metadata, coordinate_method='constant_metric',
-                        anisotropy_ratio=graph.metric.anisotropy_ratio,
+                        **graph.metric.scale_metadata,
                         reference_distance='unconstrained_straight_line')
         return cls(coordinates.astype(np.float32), graph.component_ids.copy(), graph.node_indices.copy(),
                    graph.metric.grid_shape, [], graph.fingerprint, metadata)
 
     @classmethod
     def from_gempy(cls, model, unit, *, anisotropy_ratio=20.0, landmarks=32,
-                   dimensions=6, connectivity=26, stencil_radius=1, seed=0, structural_group=None, fault_block=None):
+                   dimensions=6, connectivity=26, stencil_radius=1, seed=0, structural_group=None, fault_block=None,
+                   continuity_scale=1.0):
         metric = GeologicalMetricField.from_gempy(
             model, unit, anisotropy_ratio=anisotropy_ratio,
             structural_group=structural_group, fault_block=fault_block,
+            continuity_scale=continuity_scale,
         )
         graph = AnisotropicGraph.from_metric(metric, connectivity=connectivity, stencil_radius=stencil_radius)
         return cls.from_graph(graph, landmarks=landmarks, dimensions=dimensions, seed=seed)
@@ -146,6 +150,11 @@ class LandmarkGeologicalEmbedding:
     @property
     def diagnostics(self):
         return [projection.diagnostics for projection in self.projections]
+
+    def query(self, graph, positions):
+        """Embed physical locations using domain-safe voxel-center interpolation."""
+        from .queries import query_coordinates
+        return query_coordinates(self, graph, positions)
 
     @property
     def fingerprint(self):

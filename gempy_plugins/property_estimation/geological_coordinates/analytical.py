@@ -27,10 +27,14 @@ def constant_metric_coordinates(metric, *, normal_tolerance=1e-6):
     normals = metric.normals[metric.active_mask]
     signs = np.where(normals @ normal < 0, -1., 1.)
     deviation = np.linalg.norm(signs[:, None] * normals - normal, axis=1)
-    if metric.anisotropy_ratio != 1 and np.max(deviation) > normal_tolerance:
+    parallel, perpendicular = metric.local_scales()
+    if not (np.allclose(parallel, parallel[0], rtol=1e-12, atol=0)
+            and np.allclose(perpendicular, perpendicular[0], rtol=1e-12, atol=0)):
+        raise ValueError("Analytical coordinates require a constant metric, including continuity scales")
+    if parallel[0] != perpendicular[0] and np.max(deviation) > normal_tolerance:
         raise ValueError("Analytical coordinates require a constant metric")
     # M**(1/2) = I/ratio + (1 - 1/ratio) nn.T. Centering avoids large offsets.
     positions = metric.positions[metric.active_mask]
     delta = positions - positions.mean(axis=0)
-    lateral = 1. / metric.anisotropy_ratio
-    return lateral * delta + (1 - lateral) * (delta @ normal)[:, None] * normal
+    lateral, vertical = 1. / parallel[0], 1. / perpendicular[0]
+    return lateral * delta + (vertical - lateral) * (delta @ normal)[:, None] * normal
