@@ -70,6 +70,14 @@ def require_gstools():
     return gstools
 
 
+def require_torch():
+    try:
+        import torch
+    except ImportError:
+        raise ImportError("PyTorch is required for spectral simulation: pip install torch")
+    return torch
+
+
 def require_pyvista():
     try:
         import pyvista
