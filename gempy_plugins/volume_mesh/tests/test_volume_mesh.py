@@ -97,6 +97,27 @@ def test_snapping_moves_surfaces_by_less_than_the_snap_fraction():
     assert len(snapped.triangles) < len(exact.triangles)
 
 
+def test_unfaulted_horizon_has_closed_labelled_unit_volumes():
+    nodes, tets = kuhn_grid((0, 1, 0, 1, 0, 1), (3, 3, 3))
+    levels = [np.array([0.])]
+    cut = cut_field_volumes(
+        nodes, tets, fault_values=lambda points: np.empty((0, len(points))),
+        block_fields=lambda points, stacks, sides: (points[:, 2] - .4)[None, :],
+        stack_isovalues=levels, fault_stacks=[], snap=0.,
+    )
+    stack, interval = classify_units(cut.stack_values, [R.BASEMENT], levels)
+    complex_ = closed_volume_complex(cut, stack, interval, signed_volumes(cut.nodes, cut.tetrahedra),
+                                    [], [(0, 0., 0)])
+    assert cut.block_sides.shape == (1, 0)
+    assert complex_.report['all_closed'] and complex_.report['volumes_sum_to_region']
+    assert complex_.report['hanging_nodes'] == 0
+    assert set(complex_.patch_kinds) == {'interface', 'extent'}
+    assert complex_.volumes[(0, 0)] == pytest.approx(.6, rel=1e-12)
+    assert complex_.volumes[(0, 1)] == pytest.approx(.4, rel=1e-12)
+    kinds = np.array(complex_.patch_kinds)
+    assert np.all(np.array(complex_.patch_surfaces)[kinds == 'interface'] == 0)
+
+
 def test_quality_of_a_regular_tetrahedron():
     nodes = np.array([[1, 1, 1], [1, -1, -1], [-1, 1, -1], [-1, -1, 1]], dtype=float)
     tets = np.array([[0, 1, 2, 3]])

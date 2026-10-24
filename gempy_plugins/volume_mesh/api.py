@@ -65,7 +65,12 @@ def compute_volume_mesh(geo_model, *, cells=50_000, snap=.15, remesh=True, hausd
 
 def volume_mesh_from_evaluator(evaluator, extent, *, cells=50_000, snap=.15, remesh=True, hausd=1e-3, hgrad=1.4,
                                hmax=None, hmin=None, unit_values=None, number_of_surfaces_per_stack=None) -> VolumeMesh:
-    """Tetrahedral mesh of the box ``extent`` (engine coordinates) from an engine ``FieldEvaluator``.
+    """Tetrahedral mesh of ``extent`` using an already prepared field evaluator.
+
+    Coordinates follow the evaluator: engine coordinates for an engine
+    ``FieldEvaluator``, or world coordinates for ``gp.prepare_field_evaluator``.
+    Supply ``extent`` in the same system. The report defaults to 'engine'; a
+    world-coordinate caller should set ``mesh.report['coordinates'] = 'model'``.
 
     ``unit_values`` and ``number_of_surfaces_per_stack`` (from the engine
     inputs) give the production unit ids; without them ``unit_ids`` are -1.

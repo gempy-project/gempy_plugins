@@ -65,8 +65,10 @@ def closed_volume_complex(cut, unit_stack, interval, tet_volumes, fault_surfaces
     differ = (cell_unit[ta] != cell_unit[tb]) | (blocks[ta] != blocks[tb])
     a_face, ta, tb = a_face[differ], ta[differ], tb[differ]
     across = blocks[ta] != blocks[tb]
-    fault = np.argmax(block_sides[blocks[ta]] != block_sides[blocks[tb]], axis=1)
-    surface = np.where(across, np.asarray(fault_surfaces, dtype=np.int64)[fault], -1)
+    surface = np.full(len(ta), -1, dtype=np.int64)
+    if across.any():
+        fault = np.argmax(block_sides[blocks[ta[across]]] != block_sides[blocks[tb[across]]], axis=1)
+        surface[across] = np.asarray(fault_surfaces, dtype=np.int64)[fault]
     stacks_a, stacks_b = unit_stacks[cell_unit[ta]], unit_stacks[cell_unit[tb]]
     values = cut.stack_values
     for stack, level, index in horizon_surfaces:
