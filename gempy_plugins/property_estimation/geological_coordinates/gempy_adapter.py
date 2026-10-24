@@ -9,7 +9,7 @@ def _numpy(value):
 
 
 def metric_from_gempy(model, unit, *, anisotropy_ratio=20.0, structural_group=None,
-                      fault_block=None, gradient_tolerance=1e-12):
+                      fault_block=None, gradient_tolerance=1e-12, continuity_scale=1.0):
     """Read a computed model without re-solving or modifying its grids/options.
 
     ``unit`` is a structural element name. Basement needs an explicit
@@ -90,4 +90,5 @@ def metric_from_gempy(model, unit, *, anisotropy_ratio=20.0, structural_group=No
     return GeologicalMetricField.from_gradients(
         positions, world_gradients, mask.reshape(shape), anisotropy_ratio=anisotropy_ratio,
         domain_labels=labels, gradient_tolerance=gradient_tolerance, metadata=metadata,
+        continuity_scale=continuity_scale,
     )

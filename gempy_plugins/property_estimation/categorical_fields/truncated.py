@@ -1,4 +1,4 @@
-"""Ordered, unconditional truncated-Gaussian facies using a fixed spectral basis."""
+"""Ordered truncated-Gaussian facies using a fixed spectral basis."""
 import numpy as np
 from scipy.special import ndtri
 
@@ -65,3 +65,16 @@ class TruncatedGaussianFacies:
             values[first:first + len(batch.values)] = batch.values
             metadata = batch.metadata
         return FaciesRealizations(values, self.simulator.embedding, self.names, self.proportions, metadata=metadata)
+
+    def condition(self, observations, codes, *, sampler='rejection', max_proposals=100000,
+                  burn_in=256, rank_tolerance=1e-12):
+        """Condition on exact facies codes at nodes or GeologicalPoints.
+
+        Latent observation values are sampled jointly inside their category
+        intervals. Rejection gives independent conditional draws when feasible;
+        optional Gibbs sampling uses an independently initialized chain per draw.
+        """
+        from .conditioning import ConditionalTruncatedGaussianFacies
+        return ConditionalTruncatedGaussianFacies(
+            self, observations, codes, sampler=sampler, max_proposals=max_proposals,
+            burn_in=burn_in, rank_tolerance=rank_tolerance)

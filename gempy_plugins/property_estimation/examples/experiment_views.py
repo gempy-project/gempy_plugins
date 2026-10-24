@@ -53,27 +53,43 @@ def _outline(plotter, mesh):
     plotter.add_axes(color=INK, viewport=(.82, 0., 1., .18))
 
 
-def _cameras(plotter):
+def _cameras(plotter, bounds=None):
+    camera, half_width, half_height = CAMERA, 63., 63.
+    if bounds is not None:
+        box = np.asarray(bounds, dtype=float).reshape(3, 2)
+        center, span = box.mean(axis=1), np.diff(box, axis=1).ravel()
+        direction = np.asarray(CAMERA[1]) - CAMERA[0]
+        direction = direction / np.linalg.norm(direction)
+        right = np.cross(direction, [0, 0, 1.])
+        right /= np.linalg.norm(right)
+        up = np.cross(right, direction)
+        camera = [center - 2 * np.linalg.norm(span) * direction, center, [0, 0, 1]]
+        half_width = .625 * np.sum(np.abs(right) * span)
+        half_height = .625 * np.sum(np.abs(up) * span)
     for row in range(2):
         for column in range(2):
             plotter.subplot(row, column)
-            plotter.camera_position = CAMERA
+            plotter.camera_position = camera
             plotter.enable_parallel_projection()
-            plotter.camera.parallel_scale = 63
+            plotter.camera.parallel_scale = half_height
     plotter.link_views()
-    framing = {'scale': 63.}
+    framing = {'scale': half_height}
 
-    def fit_resize(*_):
+    def fit_resize(*_, reset=False):
         width, height = plotter.window_size
         if width <= 0 or height <= 0:
             return
-        scale = max(63., 63. * height / width)
+        scale = max(half_height, half_width * height / width)
         # Preserve user zoom relative to the framing when the window is resized.
-        plotter.camera.parallel_scale *= scale / framing['scale']
+        if reset:
+            plotter.camera.parallel_scale = scale
+        else:
+            plotter.camera.parallel_scale *= scale / framing['scale']
         framing['scale'] = scale
 
     plotter.iren.add_observer('ConfigureEvent', fit_resize)
     fit_resize()
+    return fit_resize
 
 
 def _cutaway_toggle(plotter, meshes_and_actors, cut_y=20.):
