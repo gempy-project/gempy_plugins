@@ -145,6 +145,29 @@ def test_mmg_remesh_keeps_units_and_fault_faces():
     assert below == pytest.approx(sum(v for u, v in complex_.volumes.items() if u[1] == 1), rel=5e-3)
     assert kinds['fault_internal'] in set(result['triangle_refs'].tolist())
 
+
+def test_mmg_ridge_angle_reaches_mmg(monkeypatch):
+    mmgpy = pytest.importorskip('mmgpy')
+    from gempy_plugins.volume_mesh.remesh import remesh_mmg
+
+    seen = []
+
+    class Spy(mmgpy._mmgpy.MmgMesh3D):
+        def remesh(self, **options):
+            seen.append(options)
+            return super().remesh(**options)
+
+    monkeypatch.setattr(mmgpy._mmgpy, 'MmgMesh3D', Spy)
+    cut, stack, interval, complex_ = _two_faults(shape=(6, 6, 6), snap=.15)
+    cells = connected_cells(cut.tetrahedra, interval*len(cut.block_sides)+cut.blocks)
+    args = (cut.nodes, cut.tetrahedra, cells+1, complex_.vertex_ids[complex_.triangles],
+            np.ones(len(complex_.triangles), dtype=int))
+    remesh_mmg(*args)
+    remesh_mmg(*args, ar=85)
+    assert 'ar' not in seen[0] and seen[1]['ar'] == 85.
+    with pytest.raises(ValueError, match='invalid_mmg_ridge_angle'):
+        remesh_mmg(*args, ar=0)
+
 # endregion
 
 
@@ -183,5 +206,41 @@ def test_combination_model_volume_mesh(combination, remesh, tmp_path):
     assert set(mesh.boundary_surfaces[mesh.boundary_kinds == 'fault'].tolist()) == set(fault)
     path = write_volume_mesh(mesh, tmp_path/'combination')
     assert path.exists() and path.with_name('combination_boundary.vtp').exists()
+
+
+def test_ridge_angle_removes_combination_slivers(combination):
+    pytest.importorskip('mmgpy')
+    from gempy_plugins.volume_mesh import compute_volume_mesh
+
+    # The cut's stair-steps (creases up to ~90°) are feature edges at MMG's default ridge angle of 45°.
+    default, smoothed = (compute_volume_mesh(combination, cells=4000, ar=ar).report for ar in (None, 85))
+    slivers = [r['quality']['below_5']*r['quality']['tetrahedra'] for r in (default, smoothed)]
+    assert smoothed['ar'] == 85 and smoothed['quality']['inverted'] == 0
+    assert slivers[1] < .6*slivers[0]
+    assert smoothed['quality']['min_dihedral'] > default['quality']['min_dihedral']
+    assert smoothed['unit_volume_change'] < 1e-2
+
+
+def test_auto_hmax_keeps_a_flat_model_resolved():
+    pytest.importorskip('mmgpy')
+    import gempy as gp
+    from gempy.core.data.enumerators import ExampleModel
+    from gempy_engine.config import AvailableBackends
+    from gempy_plugins.volume_mesh import compute_volume_mesh
+
+    geo_model = gp.generate_example_model(ExampleModel.HORIZONTAL_STRAT, compute_model=False)
+    gp.compute_model(geo_model, engine_config=gp.data.GemPyEngineConfig(
+        backend=AvailableBackends.numpy, dtype='float64'))
+    capped, free = (compute_volume_mesh(geo_model, cells=4000, hmax=hmax) for hmax in ('auto', None))
+    # Without a cap MMG coarsens flat horizontal units to a few dozen tetrahedra.
+    assert len(capped.tetrahedra) > 10*len(free.tetrahedra)
+    assert free.report['hmax'] is None
+    shape = np.asarray(capped.report['background_shape'])
+    extent = np.asarray(geo_model.grid.regular_grid.extent, dtype=float)
+    lengths = extent[1::2]-extent[::2]
+    assert capped.report['hmax'] == pytest.approx(4*np.max(lengths/shape)/np.linalg.norm(lengths), rel=1e-6)
+    assert capped.report['complex']['all_closed'] and capped.report['quality']['inverted'] == 0
+    with pytest.raises(ValueError, match='invalid_hmax'):
+        compute_volume_mesh(geo_model, cells=500, hmax='large')
 
 # endregion
