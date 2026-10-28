@@ -13,12 +13,18 @@ import numpy as np
 from ..optional_dependencies import require_mmgpy
 
 
-def remesh_mmg(nodes, tets, tet_refs, triangles, triangle_refs, *, hausd=1e-3, hgrad=1.4, hmax=None, hmin=None):
+def remesh_mmg(nodes, tets, tet_refs, triangles, triangle_refs, *, hausd=1e-3, hgrad=1.4, hmax=None, hmin=None,
+               ar=None):
     """MMG3D remesh; ``tet_refs`` / ``triangle_refs`` are positive integers.
 
     ``hausd`` (Hausdorff distance to the input surfaces), ``hmax`` and ``hmin``
-    are fractions of the box diagonal. Returns the remeshed nodes, tetrahedra,
-    their references, the boundary triangles with references, and the time.
+    are fractions of the box diagonal. ``ar`` is MMG's ridge angle in degrees
+    (MMG's default: 45): a crease between two triangles of one surface sharper
+    than ``ar`` is kept as a feature edge. The field cut leaves stair-steps of
+    up to ~90° along the background grid, so ~85 lets MMG smooth them; edges
+    between different references stay sharp whatever ``ar`` is. Returns the
+    remeshed nodes, tetrahedra, their references, the boundary triangles with
+    references, and the time.
     """
     mmg = require_mmgpy()
     from mmgpy._mmgpy import MmgMesh3D
@@ -37,6 +43,10 @@ def remesh_mmg(nodes, tets, tet_refs, triangles, triangle_refs, *, hausd=1e-3, h
         options['hmax'] = hmax*diagonal
     if hmin is not None:
         options['hmin'] = hmin*diagonal
+    if ar is not None:
+        if not 0 < ar <= 180:
+            raise ValueError(f'invalid_mmg_ridge_angle: ar must be in (0, 180] degrees, got {ar}')
+        options['ar'] = float(ar)
     start = time.perf_counter()
     mesh.remesh(**options)
     seconds = time.perf_counter()-start

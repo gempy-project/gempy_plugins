@@ -19,9 +19,11 @@ from .quality import quality_report
 from .remesh import remesh_mmg
 from .volume_complex import closed_volume_complex, connected_cells
 
+AUTO_HMAX_CELL_EDGES = 4  # hmax='auto': longest edge MMG may make, in background cube edges
 
-def compute_volume_mesh(geo_model, *, cells=50_000, snap=.15, remesh=True, hausd=1e-3, hgrad=1.4, hmax=None,
-                        hmin=None, engine_config=None) -> VolumeMesh:
+
+def compute_volume_mesh(geo_model, *, cells=50_000, snap=.15, remesh=True, hausd=1e-3, hgrad=1.4, hmax='auto',
+                        hmin=None, ar=None, engine_config=None) -> VolumeMesh:
     """Conforming tetrahedral mesh of every unit of ``geo_model``, in model coordinates.
 
     Solves the model once more (meshes off) so the field evaluator sees exactly
@@ -29,7 +31,11 @@ def compute_volume_mesh(geo_model, *, cells=50_000, snap=.15, remesh=True, hausd
     cubes; ``snap`` the fraction of an edge within which a surface moves onto a
     grid vertex (fewer slivers, surfaces move by at most that much). With
     ``remesh`` the cut mesh is improved by MMG3D (needs ``mmgpy``); ``hausd``,
-    ``hmax`` and ``hmin`` are fractions of the box diagonal. The engine backend
+    ``hmax`` and ``hmin`` are fractions of the box diagonal; ``hmax='auto'``
+    caps edges at four background cube edges (None: no cap, which lets MMG
+    coarsen flat models to a few dozen tetrahedra), ``ar`` is MMG's
+    ridge angle in degrees (see ``remesh_mmg``; ~85 removes most slivers left
+    by the cut's stair-steps, None keeps MMG's 45). The engine backend
     must be float64 (NumPy or Torch, optionally KeOps); ``engine_config`` sets
     it as ``gempy.compute_model`` does.
     """
@@ -51,7 +57,7 @@ def compute_volume_mesh(geo_model, *, cells=50_000, snap=.15, remesh=True, hausd
     extent = _host(solutions.octrees_output[0].grid.octree_grid.orthogonal_extent).astype(float)
     mesh = volume_mesh_from_evaluator(
         evaluator, extent, cells=cells, snap=snap, remesh=remesh, hausd=hausd, hgrad=hgrad, hmax=hmax, hmin=hmin,
-        unit_values=interpolation_input.unit_values,
+        ar=ar, unit_values=interpolation_input.unit_values,
         number_of_surfaces_per_stack=descriptor.stack_structure.number_of_surfaces_per_stack)
     names = geo_model.structural_frame.elements_names
     mesh.unit_names = [names[i-1] for i in mesh.unit_ids.tolist()]
@@ -64,7 +70,8 @@ def compute_volume_mesh(geo_model, *, cells=50_000, snap=.15, remesh=True, hausd
 
 
 def volume_mesh_from_evaluator(evaluator, extent, *, cells=50_000, snap=.15, remesh=True, hausd=1e-3, hgrad=1.4,
-                               hmax=None, hmin=None, unit_values=None, number_of_surfaces_per_stack=None) -> VolumeMesh:
+                               hmax='auto', hmin=None, ar=None, unit_values=None,
+                               number_of_surfaces_per_stack=None) -> VolumeMesh:
     """Tetrahedral mesh of ``extent`` using an already prepared field evaluator.
 
     Coordinates follow the evaluator: engine coordinates for an engine
@@ -74,6 +81,7 @@ def volume_mesh_from_evaluator(evaluator, extent, *, cells=50_000, snap=.15, rem
 
     ``unit_values`` and ``number_of_surfaces_per_stack`` (from the engine
     inputs) give the production unit ids; without them ``unit_ids`` are -1.
+    ``hmax='auto'`` is ``AUTO_HMAX_CELL_EDGES`` background cube edges.
     """
     from gempy_engine import classify_units
     from gempy_engine.modules.activator.unit_classification import unit_ids as production_unit_ids
@@ -81,6 +89,10 @@ def volume_mesh_from_evaluator(evaluator, extent, *, cells=50_000, snap=.15, rem
     seconds = {}
     clock = time.perf_counter()
     shape = background_shape(extent, cells)
+    if isinstance(hmax, str):
+        if hmax != 'auto':
+            raise ValueError(f"invalid_hmax: a fraction of the box diagonal, None or 'auto', got {hmax!r}")
+        hmax = _auto_hmax(extent, shape)
     nodes, tets = kuhn_grid(extent, shape)
     cut = cut_field_volumes(
         nodes, tets, fault_values=evaluator.fault_values,
@@ -115,12 +127,13 @@ def volume_mesh_from_evaluator(evaluator, extent, *, cells=50_000, snap=.15, rem
     label_kinds = np.array([''] + [kind for kind, _, _ in labels], dtype=object)
     label_surfaces = np.array([-1] + [surface for _, _, surface in labels], dtype=np.int64)
     boundary = complex_.vertex_ids[complex_.triangles]
-    report = dict(background_shape=shape.tolist(), snap=snap, cut=cut.stats, complex=complex_.report,
-                  cut_quality=quality_report(cut.nodes, cut.tetrahedra), cells=int(cell.max()+1), seconds=seconds)
+    report = dict(background_shape=shape.tolist(), snap=snap, hmax=hmax, ar=ar, cut=cut.stats,
+                  complex=complex_.report, cut_quality=quality_report(cut.nodes, cut.tetrahedra),
+                  cells=int(cell.max()+1), seconds=seconds)
     if remesh:
         clock = time.perf_counter()
         result = remesh_mmg(cut.nodes, cut.tetrahedra, cell+1, boundary, triangle_refs, hausd=hausd, hgrad=hgrad,
-                            hmax=hmax, hmin=hmin)
+                            hmax=hmax, hmin=hmin, ar=ar)
         seconds['remesh'] = time.perf_counter()-clock
         out_nodes, out_tets, out_cells = result['nodes'], result['tets'], result['tet_refs']-1
         boundary, triangle_refs = result['triangles'], result['triangle_refs']
@@ -162,6 +175,12 @@ def write_volume_mesh(mesh: VolumeMesh, path):
     grid.save(path)
     boundary.save(path.with_name(path.stem+'_boundary.vtp'))
     return path
+
+
+def _auto_hmax(extent, shape):
+    """``AUTO_HMAX_CELL_EDGES`` background cube edges, as a fraction of the box diagonal."""
+    lengths = np.asarray(extent, dtype=float)[1::2]-np.asarray(extent, dtype=float)[::2]
+    return float(AUTO_HMAX_CELL_EDGES*np.max(lengths/shape)/np.linalg.norm(lengths))
 
 
 def _check_closed(report):

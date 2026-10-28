@@ -37,8 +37,11 @@ gp.compute_model(geo_model, engine_config=gp.data.GemPyEngineConfig(backend=Avai
 # ---------------
 # ``cells`` is the approximate number of background cubes; ``snap`` moves a
 # surface onto a grid vertex within that fraction of an edge (fewer slivers).
+# ``ar`` is MMG's ridge angle: at 85° MMG can smooth the stair-steps the cut
+# leaves along the grid, which removes most remaining slivers (here about 120
+# → 40 tetrahedra under 5°). ``hmax`` defaults to four background cube edges.
 
-mesh = compute_volume_mesh(geo_model, cells=20_000, snap=.15, remesh=True)
+mesh = compute_volume_mesh(geo_model, cells=20_000, snap=.15, remesh=True, ar=85)
 print(f"{len(mesh.tetrahedra)} tetrahedra, units {mesh.unit_names}, {len(mesh.block_sides)} fault blocks")
 print("quality:", {k: round(v, 4) for k, v in mesh.report['quality'].items()})
 print("unit volumes:", {name: round(v) for name, v in zip(mesh.unit_names, mesh.unit_volumes.values())})
